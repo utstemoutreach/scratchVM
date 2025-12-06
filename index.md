@@ -1,2 +1,2 @@
 # In Progress!
-## The Scratch VM website will be up and running by 2:30pm today, Dec 6
+## Oops... There's a delay. We're working hard to fix it!
