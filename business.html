@@ -1,0 +1,372 @@
+<!DOCTYPE HTML>
+
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="description" content="ScratchVM Kits & Classes - Hardware Kits and Educational Programs">
+        <meta name="keywords" content="Scratch, ESP32, Hardware Kits, STEM Education">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Kits & Classes - ScratchVM</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 0;
+                color: #333;
+            }
+
+            .navbar {
+                background: rgba(255, 255, 255, 0.95);
+                backdrop-filter: blur(10px);
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                padding: 15px 20px;
+                position: sticky;
+                top: 0;
+                z-index: 1000;
+            }
+
+            .nav-container {
+                max-width: 1200px;
+                margin: 0 auto;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+
+            .nav-brand {
+                font-size: 1.5em;
+                font-weight: 700;
+                color: #667eea;
+                text-decoration: none;
+            }
+
+            .nav-links {
+                display: flex;
+                gap: 20px;
+                list-style: none;
+            }
+
+            .nav-links a {
+                color: #333;
+                text-decoration: none;
+                font-weight: 600;
+                padding: 8px 16px;
+                border-radius: 6px;
+                transition: all 0.3s;
+            }
+
+            .nav-links a:hover {
+                background: #667eea;
+                color: white;
+            }
+
+            .nav-links a.active {
+                background: #667eea;
+                color: white;
+            }
+
+            .dev-toggle {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-left: 20px;
+                padding: 6px 12px;
+                background: rgba(102, 126, 234, 0.1);
+                border-radius: 6px;
+                font-size: 0.85em;
+            }
+
+            .dev-toggle input[type="checkbox"] {
+                width: 18px;
+                height: 18px;
+                cursor: pointer;
+            }
+
+            .dev-toggle label {
+                cursor: pointer;
+                user-select: none;
+                color: #667eea;
+                font-weight: 600;
+            }
+
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 20px;
+            }
+
+            .header {
+                text-align: center;
+                color: white;
+                margin-bottom: 30px;
+                padding: 20px;
+            }
+
+            .header h1 {
+                font-size: 2.5em;
+                margin-bottom: 10px;
+                text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+            }
+
+            .header p {
+                font-size: 1.1em;
+                opacity: 0.9;
+            }
+
+            .card {
+                background: white;
+                border-radius: 12px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                padding: 30px;
+                margin-bottom: 25px;
+                transition: transform 0.2s, box-shadow 0.2s;
+            }
+
+            .card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+            }
+
+            .card h2 {
+                color: #667eea;
+                margin-bottom: 20px;
+                font-size: 1.5em;
+                border-bottom: 2px solid #667eea;
+                padding-bottom: 10px;
+            }
+
+            .kit-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 25px;
+                margin-top: 20px;
+            }
+
+            .kit-card {
+                background: #f8f9fa;
+                border-radius: 8px;
+                padding: 25px;
+                border-left: 4px solid #667eea;
+                transition: all 0.3s;
+            }
+
+            .kit-card:hover {
+                background: #e9ecef;
+                transform: translateX(5px);
+            }
+
+            .kit-card h3 {
+                color: #667eea;
+                margin-bottom: 15px;
+                font-size: 1.3em;
+            }
+
+            .kit-card .kit-price {
+                font-size: 1.5em;
+                font-weight: 700;
+                color: #667eea;
+                margin: 15px 0;
+            }
+
+            .kit-features {
+                list-style: none;
+                margin-top: 15px;
+            }
+
+            .kit-features li {
+                padding: 8px 0;
+                padding-left: 25px;
+                position: relative;
+                color: #555;
+            }
+
+            .kit-features li:before {
+                content: "✓";
+                position: absolute;
+                left: 0;
+                color: #28a745;
+                font-weight: bold;
+            }
+
+            .info-box {
+                background: #e7f3ff;
+                border-left: 4px solid #667eea;
+                padding: 20px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+            }
+
+            .info-box h3 {
+                color: #667eea;
+                margin-bottom: 10px;
+            }
+
+            .info-box p {
+                margin: 5px 0;
+                color: #555;
+                line-height: 1.6;
+            }
+
+            .contact-button {
+                display: inline-block;
+                margin-top: 15px;
+                padding: 12px 24px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                text-decoration: none;
+                border-radius: 8px;
+                font-weight: 600;
+                transition: all 0.3s;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            }
+
+            .contact-button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+                background: linear-gradient(135deg, #5568d3 0%, #653a8f 100%);
+            }
+
+            .footer {
+                text-align: center;
+                padding: 20px;
+                color: rgba(255, 255, 255, 0.7);
+                font-size: 0.85em;
+                margin-top: 40px;
+            }
+
+            @media (max-width: 768px) {
+                .nav-container {
+                    flex-direction: column;
+                    gap: 15px;
+                }
+
+                .nav-container > div {
+                    width: 100%;
+                    flex-direction: column;
+                    gap: 15px;
+                }
+
+                .nav-links {
+                    width: 100%;
+                    justify-content: center;
+                    flex-wrap: wrap;
+                }
+
+                .dev-toggle {
+                    margin-left: 0;
+                    justify-content: center;
+                }
+
+                .header h1 {
+                    font-size: 2em;
+                }
+
+                .card {
+                    padding: 20px;
+                }
+
+                .kit-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <nav class="navbar">
+            <div class="nav-container">
+                <a href="index.html" class="nav-brand">ScratchVM</a>
+                <div style="display: flex; align-items: center;">
+                    <ul class="nav-links" id="navLinks">
+                        <!-- Navigation links will be populated by JavaScript -->
+                    </ul>
+                    <div class="dev-toggle">
+                        <input type="checkbox" id="devModeToggle" title="Developer Mode">
+                        <label for="devModeToggle">Dev</label>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="container">
+            <div class="header">
+                <h1>Hardware Kits & Classes</h1>
+                <p>Hardware kits and educational programs</p>
+            </div>
+
+            <div class="card">
+                <h2>Hardware Kits</h2>
+                <p style="margin-bottom: 20px; color: #666; line-height: 1.6;">
+                    Kits include all components needed to build a ScratchVM game console.
+                </p>
+
+                <div class="kit-grid">
+                    <div class="kit-card">
+                        <h3>Basic Kit</h3>
+                        <div class="kit-price">Contact for Pricing</div>
+                        <p style="color: #666; margin-bottom: 15px;">Basic components for building a console</p>
+                        <ul class="kit-features">
+                            <li>ESP32 Microcontroller</li>
+                            <li>Display Screen</li>
+                            <li>Thumbstick Controller</li>
+                            <li>All necessary components</li>
+                            <li>Assembly instructions</li>
+                        </ul>
+                    </div>
+
+                    <div class="kit-card">
+                        <h3>Extended Kit</h3>
+                        <div class="kit-price">Contact for Pricing</div>
+                        <p style="color: #666; margin-bottom: 15px;">Includes additional hardware features</p>
+                        <ul class="kit-features">
+                            <li>Everything in Basic Kit, plus:</li>
+                            <li>Speaker for audio</li>
+                            <li>Battery pack for portability</li>
+                            <li>Touchscreen display</li>
+                            <li>Extended capabilities</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div style="text-align: center; margin-top: 30px;">
+                    <a href="mailto:contact@scratchvm.com" class="contact-button">Contact for Kit Information</a>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Educational Classes</h2>
+                <div class="info-box">
+                    <h3>Stem Center Affiliate Program</h3>
+                    <p><strong>Learn Computer Architecture & Build Your Own Console</strong></p>
+                    <p style="margin-top: 10px;">
+                        Kids can sign up for a class at the Stem Center to learn about computer architecture 
+                        while building a ScratchVM game console. The class covers embedded systems, programming, 
+                        and hardware integration.
+                    </p>
+                    <p style="margin-top: 10px;">
+                        Students learn about microcontrollers, display systems, input devices, and how these 
+                        components work together. By the end of the class, students will have built their own console.
+                    </p>
+                </div>
+
+                <div style="text-align: center; margin-top: 20px;">
+                    <a href="https://stemcenter.org" target="_blank" class="contact-button">Visit Stem Center Website</a>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            Generated by Cursor
+        </div>
+        
+        <script type="module" src="navigation.mjs"></script>
+    </body>
+</html>
+
+
