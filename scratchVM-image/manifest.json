@@ -6,15 +6,15 @@
       "chipFamily": "ESP32",
       "parts": [
         {
-          "path": "/scratchVM-image/bootloader.bin",
+          "path": "/utstemoutreach/scratchVM/refs/heads/main/scratchVM-image/bootloader.bin",
           "offset": 4096
         },
         {
-          "path": "/scratchVM-image/partitions.bin",
+          "path": "/utstemoutreach/scratchVM/refs/heads/main/scratchVM-image/partitions.bin",
           "offset": 32768
         },
         {
-          "path": "/scratchVM-image/firmware.bin",
+          "path": "/utstemoutreach/scratchVM/refs/heads/main/scratchVM-image/firmware.bin",
           "offset": 65536
         }
       ]
