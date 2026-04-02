@@ -1,0 +1,8 @@
+ScratchVM Web Converter Patch - 2025-01-10
+-------------------------------------------
+- Initial public release of the converter UI.
+- Added Scratch project downloader and ESP32 flasher workflow.
+- Enabled bug reporting link for early testers.
+
+
+

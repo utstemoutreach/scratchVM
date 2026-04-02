@@ -1,0 +1,21 @@
+There are a few options I want to add so that your project can run with the balance of quality and performance that *you* choose.
+
+-   The converter currently pixelates every image in your project to 32x32. 
+    That's very small! It keeps project sizes down and makes sure they fit on the esp32.
+    Once I have some stability with memory and project uploads, 
+    I will introduce the option to use higher resolution on some sprites, 
+    along with a visual representation of how much memory your project takes up. 
+    If you use too much, the site will let you know.
+
+-   If your project runs too slowly, you can improve performance 
+    by just using a blank background.
+    Blank sprites will help too.
+    The site will have an option to replace your sprites with small colored rectangles 
+    instead of full, detailed sprites.
+
+-   Right now, projects don't used advanced sprite features like per-pixel collision, 
+    all-around rotation, and sprite effects.
+    This is because those features are hard for the CPU to do
+    and make your project slow.
+    I will add options to enable those features in the future, but be warned:
+    projects may not perform well.

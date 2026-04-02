@@ -20,6 +20,7 @@ function spriteTemplate() {
             costumeMax: 0,
             threadCount: 0,
             variableCount: 0,
+            listCount: 0,
             id: 0,
             threads: []
         },
@@ -190,14 +191,14 @@ function makeSprite(spriteBase) {
     let sizes = [
         4, 4, 4,
         2,
-        1, 1, 1, 1, 1, 1, 1, 1
+        1, 1, 1, 1, 1, 1, 1, 1, 1
     ];
     return toIntStruct(
         [
             spriteBase.x, spriteBase.y, spriteBase.rotation,
             spriteBase.size,
             spriteBase.visible, spriteBase.layer, spriteBase.rotationStyle, spriteBase.costumeIndex,
-            spriteBase.costumeMax, spriteBase.threadCount, spriteBase.variableCount, spriteBase.id
+            spriteBase.costumeMax, spriteBase.threadCount, spriteBase.variableCount, 0, spriteBase.id
         ],
         sizes
     );

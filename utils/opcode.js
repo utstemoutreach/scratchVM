@@ -2,10 +2,6 @@
 const UINT32_MAX = 4294967295;
 
 export const opcodeArray = [
-    "INNER_PARTITION_BEGINLOOPCONTROL",
-    "INNER_LOOPINIT",
-    "INNER_LOOPINCREMENT",
-    "INNER_JUMPIFREPEATDONE",
     "INNER_PARTITION_BEGINEXPRESSIONS",
     "SENSING_ANSWER",
     "SENSING_MOUSEDOWN",
@@ -77,9 +73,13 @@ export const opcodeArray = [
     "CONTROL_CREATE_CLONE_OF_MENU",
     "CONTROL_DELETE_THIS_CLONE",
     "CONTROL_STOP",
+    "INNER_LOCALS_PUSHARG",
+    "INNER_LOCALS_POPARG",
+    "INNER_LOCALS_GETARG",
     "INNER_JUMPIF",
     "INNER_JUMPIFNOT",
     "INNER_JUMP",
+    "INNER_JUMPINDIRECT",
     "INNER__GLIDEITERATION",
     "MOTION_MOVESTEPS",
     "MOTION_TURNRIGHT",
@@ -227,6 +227,7 @@ let globalObjectIndex = {
     variables: {},
     costumes: {},
     stage: null,
+    functions: {},
 };
 
 export function indexObjects(project) {
@@ -237,6 +238,9 @@ export function indexObjects(project) {
         variables: {},
         costumes: {},
         stage: null,
+        functions: {},
+        functionParams: {},
+        functionArgs: {},
     };
     let spriteCount = 0;
     let broadcastCount = 0;
@@ -246,6 +250,7 @@ export function indexObjects(project) {
     let stage;
     let objectIndex = globalObjectIndex;
     for (let target of project.targets) {
+        objectIndex.functions[target.name] = {};
         if (target.isStage) {
             stage = target;
         }
@@ -294,6 +299,9 @@ function findVariable(name, id) {
     return globalObjectIndex.variables[id];
 }
 
+function findFunction(name) {
+}
+
 const pushFuncs = {
     NUM: (input, code) => {
         let number = Number(input.value[0]);
@@ -312,7 +320,7 @@ const pushFuncs = {
         pushArg(code, toCodeLiteral(degrees, 4));
     },
     COLOR: (input) => {
-        console.log("COLOR");
+        console.error("COLOR");
     },
     TEXT: (input, code) => {
         if (!isNaN(input.value[0])) {
@@ -335,7 +343,7 @@ const pushFuncs = {
         pushArg(code, toCodeLiteral(varIndex, 2));
     },
     LIST: (input) => {
-        console.log("LIST");
+        console.error("LIST");
     },
     OBJECTREF: (input, code, blocks, owner) => {
         let block = blocks[input.value];
@@ -416,6 +424,11 @@ function pushInput(input, code, blocks, owner) {
     pushFunc(input, code, blocks, owner);
 }
 
+function inlineFunction(block, code, blocks, owner) {
+    let newCode = [];
+    let functionBlock = 0;
+}
+
 function reportField(block, field, code) {
     console.log("in pushField:", block, field);
 }
@@ -449,9 +462,18 @@ function getEventCondition(hat, project) {
 // This was an example of premature optimization, as the VM itself runs plenty quickly, and the special cases it requires the programmer to handle are not worth the complexity.
 // The inconsistent strategy you will see among these opcode handlers is reflective of a pivot from the prior strategy to a simpler interpretation where inputs are trusted as inputs.
 // A refactor is needed to bring everything up to consistency.
+// This will allow the list of special functions to be much smaller.
+
 let specialFunctions = {
     LOOKS_CHANGEEFFECTBY: () => {},
     LOOKS_SETEFFECTTO: () => {},
+    PROCEDURES_CALL: (block, code, blocks, owner) => {
+        // look up the positional arguments for the function with this name
+        // push those from the input list in order
+        // push the address of the next opcode
+        // look up the code position of the function with this name
+        // jump to it
+    },
     OPERATOR_MATHOP: (block, code, blocks, owner) => {
         pushInput(block.inputs.NUM, code, blocks, owner);
         code.push("OPERATOR_MATHOP");
@@ -646,6 +668,7 @@ let specialFunctions = {
         code.push(0, 0);
         code[elseIndex] = (code.length & 0xff);
         code[elseIndex + 1] = ((code.length >> 8) & 0xff);
+        console.log(block);
         pushInput(block.inputs.SUBSTACK2, code, blocks, owner);
         code[endIndex] = (code.length & 0xff);
         code[endIndex + 1] = ((code.length >> 8) & 0xff);
@@ -755,6 +778,19 @@ export function compileBlock(block, code, blocks, owner) {
     }
 }
 
+function compileFunction(owner, blocks, code, functionName) {
+    globalObjectIndex.functions[functionName].location = code.length
+    let definition = blocks[functionName];
+    let block = blocks[definition.next];
+    while (block != null) {
+        compileBlock(block, code, blocks, owner);
+        block = blocks[block.next];
+    }
+    code.push("INNER_LOCALS_GETARG");
+    pushArg(code, 0);
+    code.push("INNER_JUMPINDIRECT");
+}
+
 export function compileBlocks(hat, owner, blocks, code, project) {
     indexObjects(project);
     let entryPoint = code.length;
@@ -768,6 +804,7 @@ export function compileBlocks(hat, owner, blocks, code, project) {
     code.push("INNER_PUSHID");
     pushArg(code, [0, 0]);
     code.push("CONTROL_STOP");
+    console.log(code)
     return {entryPoint, startEvent, eventCondition};
 }
 

@@ -1,0 +1,17 @@
+Coming Soon: My Blocks
+Right now, "My Blocks" aren't working yet, but they're the next feature I'm adding!
+
+When you use a "My Blocks" block in your project, the converter will copy all the code inside that block and paste it right where you used it.
+But Wait... What If a My Block Uses Itself?
+Imagine you make a "My Block" called "draw a picture," and inside that block, you use "draw a picture" again. Here's what happens:
+
+I start copying the code for "draw a picture"
+I see another "draw a picture" inside
+I start copying THAT one
+I see another "draw a picture" inside THAT one
+And it keeps going... forever!
+
+This is called recursion - when something uses itself. It's like standing between two mirrors and seeing infinite reflections.
+The Solution
+To keep the converter from getting stuck forever, I'll add a limit on how many times a My Block can call itself. This way, your projects will always work smoothly.
+Later on, I might allow unlimited recursion - as long as the chip has enough memory to handle it.

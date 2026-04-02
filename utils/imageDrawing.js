@@ -6,6 +6,10 @@ const SCRATCHHEIGHT = 360;
 const structImageSize = 268;
 const imageNameSize = 256;
 
+const xScaleMax = 32;
+
+const yScaleMax = 32;
+
 let scaleSettingsModes = [
     "scaleFactor",
     "scaleTarget",
@@ -202,7 +206,7 @@ export async function getImageBuffer(file, details, byteBudget) {
         if (filename === undefined) {
             filename = image.assetId + "." + image.dataFormat;
         }
-        let {scaledImage, width, height, targetWidth, targetHeight} = await getScaledImageFromFile(file, filename, {mode: "scaleMax", x: 32, y: 32});
+        let {scaledImage, width, height, targetWidth, targetHeight} = await getScaledImageFromFile(file, filename, {mode: "scaleMax", x: xScaleMax, y: yScaleMax});
         image.scaledImage = scaledImage;
         image.width = width;
         image.height = height;
