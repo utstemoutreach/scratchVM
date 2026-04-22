@@ -161,7 +161,7 @@
                 font-size: 1em;
                 transition: border-color 0.3s;
             }
-input[type="text"]:focus,
+            input[type="text"]:focus,
             input[type="email"]:focus,
             textarea:focus {
                 outline: none;
@@ -294,6 +294,58 @@ input[type="text"]:focus,
                 color: #856404;
             }
 
+            /* Terminal Styles */
+            #terminal {
+                background-color: #000;
+                color: #00ff00;
+                font-family: 'Courier New', Courier, monospace;
+                padding: 20px;
+            }
+
+            #terminal h2 {
+                color: #00ff00;
+                border-bottom: 2px solid #00ff00;
+            }
+
+            .terminal-body {
+                background-color: #000;
+                height: 300px;
+                overflow: auto;
+                padding: 10px;
+                border: 1px solid #333;
+                margin-bottom: 15px;
+                white-space: pre;
+                font-size: 0.9em;
+                line-height: 1.4;
+            }
+
+            .terminal-input-container {
+                display: flex;
+                gap: 10px;
+            }
+
+            #terminalInput {
+                background: #000;
+                border: 1px solid #00ff00;
+                color: #00ff00;
+                font-family: 'Courier New', Courier, monospace;
+            }
+
+            #terminalInput::placeholder {
+                color: rgba(0, 255, 0, 0.5);
+            }
+
+            .btn-terminal {
+                background: #00ff00;
+                color: #000;
+                box-shadow: none;
+            }
+
+            .btn-terminal:hover {
+                background: #00cc00;
+                color: #000;
+            }
+
             .esp-tools-section {
                 margin-top: 20px;
             }
@@ -367,8 +419,7 @@ input[type="text"]:focus,
                 <a href="index.html" class="nav-brand">ScratchVM</a>
                 <div style="display: flex; align-items: center;">
                     <ul class="nav-links" id="navLinks">
-                        <!-- Navigation links will be populated by JavaScript -->
-                    </ul>
+                        </ul>
                 </div>
             </div>
         </nav>
@@ -381,7 +432,7 @@ input[type="text"]:focus,
 
             <div class="card">
                 <h2>Download Scratch Project</h2>
-                <div class="form-group", id="projectDownload">
+                <div class="form-group" id="projectDownload">
                     <label for="projectURLInput">Scratch Project URL or ID</label>
                     <input type="text" id="projectURLInput" 
                            placeholder="https://scratch.mit.edu/projects/1238081605" 
@@ -412,6 +463,16 @@ input[type="text"]:focus,
                         <button class="btn-primary">Go to Bug Report Page</button>
                     </a>
                 </div>
+            </div>
+
+            <div class="card" id="terminal">
+                <h2>Debug Terminal</h2>
+                <div class="terminal-body" id="terminalOutput">Welcome to ScratchVM Terminal...
+Ready for input.</div>
+                <form class="terminal-input-container" id="terminalForm">
+                    <input type="text" id="terminalInput" placeholder="Enter command..." autocomplete="off" name="command">
+                    <button id="terminalSend" class="btn-terminal" type="submit">Send</button>
+                </form>
             </div>
         </div>
         

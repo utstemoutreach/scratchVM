@@ -1,10 +1,13 @@
 import * as opcode from "./opcode.js";
 import * as imageDrawing from "./imageDrawing.js";
 
+// TODO: use `struct` library for serialization instead of manual
+// TODO: potentially fetch the declaration of each struct from the actual source so desyncs are updated instantly
+
 const SIZERATIO = 1024;
 
-// template for the object representing each game object
-function spriteTemplate() {
+// struct-like object representing each game object
+function newSpriteStruct() {
     return {
         name: "",
         costumes: [],
@@ -28,13 +31,11 @@ function spriteTemplate() {
 }
 
 // template for the object representing a whole game
-function detailsTemplate() {
+function newProjectBlob() {
     return {
-        unzippedFile: null,
-        imageBuffer: null,
         sprites: [],
         code: [],
-        objectIndex: {}
+        imageBuffer: null,
     };
 }
 
@@ -51,70 +52,49 @@ function degreesToScaled32(degrees) {
     return scaled;
 }
 
-// get the sb3 file from the operation layer
-function getFsEntry(name) {
-    return files[name];
-}
-
-// extract relevant details from the sb3 file and load them into a details template
-async function getDetails(project) {
-    let details = detailsTemplate();
-    details.unzippedFile = project;
-    let projectJson = JSON.parse(new TextDecoder("utf-8").decode(project["project.json"])); // I hate javascript
-    for (let [index, target] of projectJson.targets.entries()) {
+function serializeProject(project, json) {
+    let directory = {
+        code: project.code,
+        spriteStructs: [],
+        imageBuffer: null,
+        broadcasts: [],
+        backdrops: null,
+    };
+    for (let [index, target] of Object.entries(json.targets)) {
         let key = target.name;
-        let sprite = spriteTemplate();
-        sprite.name = target.name
+        let sprite = newSpriteStruct();
+        sprite.name = target.name;
         sprite.costumes = target.costumes;
         sprite.struct.id = index;
         sprite.struct.variableCount = Object.entries(target.variables).length;
         sprite.struct.x = target.x;
         sprite.struct.y = target.y;
         sprite.struct.size = target.size;
-        sprite.struct.rotation = target.direction;
         sprite.struct.visible = target.visible;
-        sprite.struct.costumeIndex = target.currentCostume;
+        sprite.struct.rotation = target.direction;
         sprite.struct.costumeMax = target.costumes.length;
+        sprite.struct.costumeIndex = target.currentCostume;
         sprite.struct.rotationStyle = target.rotationStyle;
+
         adjustSprite(sprite, target.isStage);
-        details.sprites.push(sprite);
+
+        sprite.threads = project.sprites[index].threads;
+        sprite.struct.threadCount = sprite.threads.length;
+
+        directory.spriteStructs.push(sprite);
+        directory.broadcasts.push(target.broadcasts);
     }
-    details.objectIndex = opcode.indexObjects(projectJson, {});
-    console.log(details.objectIndex);
-    details.code = compileSprites(details.sprites, projectJson);
-    details.imageBuffer = await imageDrawing.getImageBuffer(project, details);
-    return details;
+    directory.backdrops = Object.entries(directory.spriteStructs[0].costumes).length
+    return directory;
 }
 
-// Initialize the threads with every block 
-function indexThreads(blocks) {
-    let ids = [];
-    for (let [id, block] of Object.entries(blocks)) {
-        if (block.topLevel && opcode.events.includes(block.opcode)) {
-            ids.push(id);
-        }
-    }
-    return ids;
-}
-
-function compileSprite(code, sprite, blocks, project) {
-    opcode.processBlocks(blocks);
-    let threadIds = indexThreads(blocks);
-    for (let threadId of threadIds) {
-        let hat = blocks[threadId];
-        let thread = opcode.compileBlocks(hat, sprite, blocks, code, project);
-        sprite.struct.threads.push(thread);
-    }
-    sprite.struct.threadCount = sprite.struct.threads.length;
-}
-
-function compileSprites(sprites, projectJson) {
-    let code = [];
-    for (let sprite of sprites) {
-        let blocks = projectJson["targets"][sprite.struct.id]["blocks"]
-        compileSprite(code, sprite, blocks, projectJson);
-    }
-    return code;
+// compile an sb3 file into a structured and serialized directory ready to emit a project blob
+async function compile(sb3) {
+    let json = JSON.parse(new TextDecoder("utf-8").decode(sb3["project.json"]));
+    let project = await opcode.compileProjectFile(json);
+    let directory = serializeProject(project, json);
+    directory.imageBuffer = await imageDrawing.getImageBuffer(sb3, directory);
+    return directory;
 }
 
 // adjust the sprite's parameters to match the quirks of my C representation
@@ -140,14 +120,15 @@ function pad(array, align) {
 }
 
 export async function compileScratchProject(file) {
-    let details = await getDetails(file);
-    let bytes = await getProgramAsBlob(details);
+    let directory = await compile(file);
+    let bytes = await getProgramAsBlob(directory);
     sendFile(new Uint8Array(bytes), "programData.bin");
     sendFile(bytesToCarray(bytes, "programData"), "definitions.c");
     return bytes;
 }
 
 async function sendFile(blob, name) {
+    console.log("sending", name);
     fetch("upload/" + name, {
         method: 'POST',
         headers: {},
@@ -204,6 +185,7 @@ function makeSprite(spriteBase) {
     );
 }
 
+
 function makeThread(threadBase) {
     let sizes = [2, 2, 1];
     return toIntStruct(
@@ -212,16 +194,15 @@ function makeThread(threadBase) {
     );
 }
 
-async function getProgramAsBlob(details) {
-    let code = opcode.getCodeAsBuffer(details.code);
-    pad(code, 4);
+async function getProgramAsBlob(directory) {
+    pad(directory.code, 4);
     const enc = new TextEncoder();
     let headerArray = [
-        details.sprites.length,
-        code.length,
+        directory.spriteStructs.length,
+        directory.code.length,
         5,
-        Object.keys(details.objectIndex.broadcasts).length,
-        Object.keys(details.objectIndex.backdrops).length,
+        Object.keys(directory.broadcasts).length,
+        Object.keys(directory.backdrops).length,
         0,
         0,
         0,
@@ -245,26 +226,26 @@ async function getProgramAsBlob(details) {
     let headerStruct = toIntStruct(headerArray, headerArraySizes);
     let spriteBuffer = [];
     let threadBuffer = [];
-    details.sprites.forEach(sprite => {
-        spriteBuffer.push(...makeSprite(sprite.struct))
+    for (let sprite of directory.spriteStructs) {
+        spriteBuffer.push(...makeSprite(sprite.struct));
         pad(spriteBuffer, 4);
-        sprite.struct.threads.forEach( thread => {
+        for (let thread of sprite.threads) {
             threadBuffer.push(...makeThread(thread));
             pad(threadBuffer, 2);
-        });
-    });
+        };
+    };
     headerArray[5] = headerStruct.length;
-    headerArray[6] = headerStruct.length + code.length;
-    headerArray[7] = headerStruct.length + code.length + spriteBuffer.length;
-    headerArray[8] = headerStruct.length + code.length + spriteBuffer.length + threadBuffer.length;
+    headerArray[6] = headerStruct.length + directory.code.length;
+    headerArray[7] = headerStruct.length + directory.code.length + spriteBuffer.length;
+    headerArray[8] = headerStruct.length + directory.code.length + spriteBuffer.length + threadBuffer.length;
 
-    let imageBytes = details.imageBuffer;
-    let dataSize = headerStruct.length + code.length + spriteBuffer.length + threadBuffer.length + imageBytes.length;
+    let imageBytes = directory.imageBuffer;
+    let dataSize = headerStruct.length + directory.code.length + spriteBuffer.length + threadBuffer.length + imageBytes.length;
     headerArray[9] = dataSize;
     // for real this time
     headerStruct = toIntStruct(headerArray, headerArraySizes);
     pad(headerStruct, 4);
-    let bytes = [...magicBytes, ...headerStruct, ...code, ...spriteBuffer, ...threadBuffer, ...imageBytes];
+    let bytes = [...magicBytes, ...headerStruct, ...directory.code, ...spriteBuffer, ...threadBuffer, ...imageBytes];
     return bytes;
 }
 

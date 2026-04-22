@@ -38,7 +38,10 @@ function parseProjectIDFromURL(url) {
 }
 
 async function unzipFile(file) {
-    const buffer = file.arrayBuffer;
+    let buffer = file.arrayBuffer;
+    if (typeof buffer === "function") {
+        buffer = await file.arrayBuffer();
+    }
     const bytes = new Uint8Array(buffer);
     const unzipped = unzipSync(bytes);
     return unzipped;
@@ -52,64 +55,62 @@ function sanitizeProjectName(rawName, fallback = "project") {
     return rawName.replace(/[^a-zA-Z0-9_-]/g, "_").substring(0, 50) || safeFallback;
 }
 
+async function compileScratchProject(zipBuffer) {
+    let projectInfo = null;
+    let file = await unzipFile(zipBuffer);
+    return {bytes: await compile.compileScratchProject(file), projectInfo}
+}
+
 // Download Scratch project by URL and store with project name
 async function getScratchProject() {
-    try {
-        const projectURLInput = document.getElementById("projectURLInput");
-        
-        if (!projectURLInput) {
-            throw new Error("Input field not found");
-        }
-        
-        const projectURL = projectURLInput.value.trim();
-        
-        if (!projectURL) {
-            updateStatus("Please enter a Scratch project URL or ID", "warning");
-            return;
-        }
-        
-        // Parse project ID from URL
-        const projectID = parseProjectIDFromURL(projectURL);
-        
-        if (!projectID) {
-            updateStatus("Invalid Scratch project URL. Please use format: https://scratch.mit.edu/projects/1238081605", "error");
-            return;
-        }
-        
-        updateStatus(`Downloading Scratch project ${projectID}...`, "info");
-        
-        const options = {
-            onProgress: (type, loaded, total) => {
-                const progress = Math.round((loaded / total) * 100);
-                updateStatus(`Downloading ${type}: ${progress}%`);
-            }
-        };
-        
-        const project = await SBDL.downloadProjectFromID(projectID, options);
-        console.log("Downloaded project:", project);
-        
-        // Get project name from the downloaded project
-        let projectName = sanitizeProjectName(project.title, `project_${projectID}`);
-        if (!project.title) {
-            updateStatus(`Warning: Could not extract project name, using ${projectName}`, "warning");
-        }
-        
-        let file = await unzipFile(project, projectID);
-        let projectInfo = {
-            id: projectID,
-            name: projectName
-        };
-        
-        // Clear the input
-        projectURLInput.value = "";
-        updateStatus(`✓ Project "${projectName}" (ID: ${projectID}) downloaded and stored successfully!`, "success");
-        return {bytes: await compile.compileScratchProject(file), projectInfo}
-        
-        
-    } catch (error) {
-        updateStatus(`✗ Error downloading project: ${error.message}`, "error");
-        console.error("Download error:", error);
+    const projectURLInput = document.getElementById("projectURLInput");
+    
+    if (!projectURLInput) {
+        throw new Error("Input field not found");
     }
+    
+    const projectURL = projectURLInput.value.trim();
+    
+    if (!projectURL) {
+        updateStatus("Please enter a Scratch project URL or ID", "warning");
+        return;
+    }
+    
+    // Parse project ID from URL
+    const projectID = parseProjectIDFromURL(projectURL);
+    
+    if (!projectID) {
+        updateStatus("Invalid Scratch project URL. Please use format: https://scratch.mit.edu/projects/1238081605", "error");
+        return;
+    }
+    
+    updateStatus(`Downloading Scratch project ${projectID}...`, "info");
+    
+    const options = {
+        onProgress: (type, loaded, total) => {
+            const progress = Math.round((loaded / total) * 100);
+            updateStatus(`Downloading ${type}: ${progress}%`);
+        }
+    };
+    
+    const project = await SBDL.downloadProjectFromID(projectID, options);
+    
+    // Get project name from the downloaded project
+    let projectName = sanitizeProjectName(project.title, `project_${projectID}`);
+    if (!project.title) {
+        updateStatus(`Warning: Could not extract project name, using ${projectName}`, "warning");
+    }
+    
+    let file = await unzipFile(project);
+    let projectInfo = {
+        id: projectID,
+        name: projectName
+    };
+    
+    // Clear the input
+    projectURLInput.value = "";
+    updateStatus(`✓ Project "${projectName}" (ID: ${projectID}) downloaded and stored successfully!`, "success");
+    return {bytes: await compile.compileScratchProject(file), projectInfo}
 }
 
 function get(DOMselector) {
@@ -143,17 +144,27 @@ let states = {
             enable(projectDownloadCard);
             disable(serialMenuCard);
             disable(reportMenuCard);
-            console.log("returning ok");
             return "ok";
         }
         else if (updateEvent.type == "dom") {
-            console.log("getting project");
-            let {bytes, projectInfo} = await getScratchProject();
-            console.log(bytes, projectInfo);
-            stateShared = {bytes, projectInfo};
-            console.log("switching state");
-            switchState("awaitingUpload");
-            return "ok";
+            if (updateEvent.eventName == "click") {
+                let {bytes, projectInfo} = await getScratchProject();
+                stateShared = {bytes, projectInfo};
+                switchState("awaitingUpload");
+                return "ok";
+            }
+            if (updateEvent.eventName == "drop") {
+                updateEvent.event.preventDefault();
+                const files = updateEvent.event.dataTransfer.files;
+                let file = await unzipFile(files[0]);
+                let bytes = await compile.compileScratchProject(file)
+                stateShared = {bytes, projectInfo:null};
+                switchState("awaitingUpload");
+                return "ok";
+            }
+            else {
+                console.warn(updateEvent);
+            }
         }
         else if (updateEvent.type == "switchFail") {
             updateState("restore");
@@ -164,7 +175,6 @@ let states = {
 
     webVmTesting: async function (updateEvent) {
     },
-
 
     awaitingUpload: async function (updateEvent) {
         if (updateEvent.type == "switch") {
@@ -178,9 +188,30 @@ let states = {
             return "ok";
         }
         else if (updateEvent.type == "dom") {
-            await serial.connectSerial();
-            await serial.sendProgramDataViaSerial(stateShared.bytes);
-            await serial.disconnectSerial();
+            let terminalOutput = get("#terminalOutput");
+            let terminalForm = get("#terminalForm");
+            let serialObj = await serial.initSerial(
+                null,
+                (bytes) => {
+                    let text = new TextDecoder().decode(bytes)
+                    const node = document.createTextNode(text);
+                    terminalOutput.appendChild(node);
+                },
+                921600
+            );
+            terminalForm.addEventListener("submit", (e) => {
+                e.preventDefault();
+                
+                let data = new FormData(terminalForm);
+                let text = data.get("command");
+
+                serial.sendInput(serialObj, new TextEncoder().encode(text));
+            });
+            let bytes = stateShared.bytes;
+            let magic = bytes.slice(0, 8);
+            let program = bytes.slice(8);
+            serial.sendInput(serialObj, magic);
+            serial.sendInput(serialObj, program);
             switchState("awaitingFeedback");
             return "ok";
         }
@@ -200,7 +231,6 @@ let states = {
             return "ok";
         }
         else if (updateEvent.type == "dom") {
-            console.log(updateEvent.sender);
             updateEvent.sender.dispatchFunction(stateShared.project);
             switchState("awaitingProject");
             return "ok";
@@ -219,29 +249,27 @@ function updateState(updateEvent) {
 let currentState = "awaitingProject";
 async function switchState(other) {
     let switchStatus = await states[other]({type: "switch"});
-    console.log(switchStatus);
     if (switchStatus !== "ok") {
         states[currentState]({type: "switchFail", status: switchStatus});
     }
     else {
         currentState = other;
-        console.log("currentState:", currentState);
     }
 }
 
-function registerStateUpdate(DOMobj, eventName, typeFilter) {
-    DOMobj.addEventListener(
+function registerStateUpdate(queryString, eventName, typeFilter) {
+    let element = document.querySelector(queryString);
+    element.addEventListener(
         eventName, 
         (event) => {
             if (typeFilter && typeFilter.includes(event.type)) return;
-            updateState({type: "dom", eventName, event});
+            updateState({type: "dom", eventName, event, sender: element});
         }
     )
 }
 
 function autoRegisterStateUpdates(queryStrings, eventName, typeFilter) {
     for (let queryString of queryStrings) {
-        console.log(queryString);
         let element = document.querySelector(queryString);
         element.addEventListener(
             eventName, 
@@ -256,8 +284,8 @@ function autoRegisterStateUpdates(queryStrings, eventName, typeFilter) {
 let projectDownloadCard = get("#projectDownload");
 let serialMenuCard = get("#serialMenu");
 let reportMenuCard = get("#reportMenu");
+let terminalCard = get("#terminal");
 
-console.log(serialMenu);
 
 async function main() {
     updateState({type: "switch"});
@@ -267,6 +295,9 @@ async function main() {
         "#reportGameWorked", 
         "#reportGameFailed"
     ], "click");
+    registerStateUpdate("#projectDownload", "dragenter");
+    registerStateUpdate("#projectDownload", "dragover");
+    registerStateUpdate("#projectDownload", "drop");
 
     get("#reportGameWorked").dispatchFunction = (bytes) => reportGameStatus(bytes, true);
     get("#reportGameFailed").dispatchFunction = (bytes) => reportGameStatus(bytes, false);

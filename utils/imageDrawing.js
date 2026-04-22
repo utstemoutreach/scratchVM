@@ -1,4 +1,4 @@
-import mime from 'https://cdn.skypack.dev/mime'; 
+import mime from 'https://esm.sh/mime'; 
 
 const SCRATCHWIDTH = 480;
 const SCRATCHHEIGHT = 360;
@@ -195,8 +195,8 @@ export async function getImageBuffer(file, details, byteBudget) {
     let totalSize = 0;
     let imageCount = 0;
     let images = [];
-    for (let sprite of details.sprites) {
-        for (let image of sprite.costumes) {
+    for (let sprite of details.spriteStructs) {
+        for (let [index, image] of Object.entries(sprite.costumes)) {
             imageCount++;
             images.push(image);
         }

@@ -1,3 +1,804 @@
+function toScaledInt32Tuple(number) {
+    let whole = Math.floor(number);
+    let fraction = number - whole;
+
+    // fraction is given in scale 0 -> 1
+    // I need to transform it to the scale 0 -> 65k (16bit int limit)
+    
+    fraction *= 65535;
+    fraction = Math.round(fraction);
+
+    let componentBytes = new Uint8Array([fraction, fraction >> 8, whole, whole >> 8]); // All params implicitly masked by 8
+    return componentBytes;
+}
+
+function toCString(string) {
+    const bytes = new TextEncoder().encode(string + '\0');
+    return bytes;
+}
+
+function toCodeLiteral(number, byteSize) {
+    let bytes = [];
+    for (let i = 0; i < byteSize; i++) {
+        bytes.push(number & 0xff);
+        number >>= 8;
+    }
+    return bytes;
+}
+
+export const argProcessors = {
+    id: (value) => {
+        return toCodeLiteral(value, 2);
+    },
+    fraction: (value) => {
+        return toScaledInt32Tuple(value);
+    },
+    wholeNumber: (value) => {
+        return toCodeLiteral(value, 4);
+    },
+    string: (value) => {
+        return toCString(value);
+    },
+};
+
+class PromiseLog {
+    perpetualPromise = new Promise(res=>{});
+    constructor() {
+        this.unsettled = {};
+        this.unsettledCount = 0;
+        this.unsettledId = 0;
+        this.settledPromise = Promise.resolve();
+        this.settledResolve = null;
+        this.settled = true;
+    }
+    // LLMs will think there is a race condition because they are stupid. There is no race condition.
+    // The thread that depends on the value of `unsettledCount` is always the thread that modified `unsettledCount`,
+    // and it gets to finish BEFORE letting any other threads get a turn.
+    depend(promise) {
+        let id = this.unsettledId;
+        this.unsettledId++;
+        this.unsettled[id] = promise;
+        this.unsettledCount++;
+        // add itself to the `unsettled` queue and, if it was empty, create a hook for outsiders to wait for the queue to be empty again.
+        if (this.unsettledCount == 1) {
+            this.settledPromise = new Promise(res => {
+                this.settledResolve = res;
+            });
+            this.settled = false;
+        }
+        // delete itself when resolved and notify anyone waiting for `this.settledPromise` if deleting itself clears the `unsettled` queue.
+        let promiseResponse = value => {
+            delete this.unsettled[id];
+            this.unsettledCount--;
+            if (this.unsettledCount == 0) {
+                this.settledResolve();
+                this.settled = true;
+            }
+        };
+        promise.then(promiseResponse, promiseResponse);
+    }
+    async settle(timeout) {
+        let timeoutPromise = this.perpetualPromise; 
+        if (timeout) timeoutPromise = new Promise(res => {
+            setTimeout(res, timeout);
+        });
+        // if (!timeout), `timeoutPromise` will never win
+        await Promise.race([this.settledPromise, timeoutPromise]);
+        return this.settled;
+    }
+    setProperty(obj, prop, promise) {
+        if (typeof promise.then !== "function") {
+            obj[prop] = promise;
+            return;
+        }
+        this.depend(promise);
+        promise.then(value => {
+            obj[prop] = value;
+        });
+    }
+}
+
+class Frame {
+    constructor() {
+        this.args = {};
+        this.currentSize = 0;
+        this.maxSize = 0;
+        this.resolveSize = null;
+        this.finalSize = new Promise(res => this.resolveSize = res);
+    }
+    getStorage(size) {
+        let base = this.currentSize;
+        this.currentSize += size;
+        if (this.currentSize > this.maxSize) this.maxSize = this.currentSize;
+        console.log("allocating", size, "(maxSize", this.maxSize, ")");
+        return base;
+    }
+    returnStorage(size) {
+        this.currentSize -= size;
+    }
+    finish() {
+        this.resolveSize(this.maxSize);
+        return this.maxSize;
+    }
+}
+
+const defaultAlignmentMask = 3;
+export class Thread {
+    constructor(projectIndex, sprite, hat, code, isFunction) {
+        this.frame = new Frame();
+        if (isFunction) {
+            this.frame.getStorage(1); // return address
+        }
+        this.isFunction = isFunction;
+        this.args = {};
+        this.promises = new PromiseLog();
+
+        this.serialized = code || [];
+
+        this.projectIndex = projectIndex;
+        this.sprite = sprite;
+        this.blocks = sprite.body.blocks;
+
+        hat = processBlock(hat, this.blocks);
+        this.entryPoint = code.length;
+        this.startEvent = events.indexOf(hat.opcode);
+        this.eventCondition = null;
+        this.promises.setProperty(this, "eventCondition", getEventCondition(hat, projectIndex));
+
+        this.pushPrologue();
+        this.compileBlock(this.blocks[hat.next]);
+        this.frame.finish();
+        this.pushEpilogue();
+    }
+    async settle(timeout) {
+        return await this.promises.settle(timeout);
+    }
+    depend(promise) {
+        return this.promises.depend(promise);
+    }
+    settled() {
+        return this.promises.settled;
+    }
+    pushPrologue() {
+        if (this.isFunction) return;
+        let frameSize = 0;
+        this.pushOpcode("INNER_PUSHFRAME");
+        this.align();
+        let codePosition = this.serialized.length;
+        this.pushId(frameSize);
+        this.frame.finalSize.then(val => {
+            this.splice(argProcessors.id(val), codePosition);
+        });
+    }
+    pushDestroyFrame() {
+        this.pushOpcode("INNER_POPFRAME");
+        this.pushId(this.frame.maxSize);
+    }
+    pushEpilogue() {
+        if (!this.isFunction) {
+            this.pushDestroyFrame();
+            this.pushOpcode("INNER_PUSHID");
+            this.pushId(0);
+            this.pushOpcode("CONTROL_STOP");
+        }
+        else {
+            this.pushOpcode("INNER_GETFRAMEVAR");
+            this.pushId(0);
+            this.pushOpcode("INNER_JUMPINDIRECT");
+        }
+    }
+    align(mask) {
+        mask = mask || defaultAlignmentMask;
+        while (this.serialized.length != (this.serialized.length & ~mask)) {
+            this.serialized.push(0);
+        }
+    }
+    splice(bytes, position) {
+        if (position == null) position = this.serialized.length;
+        let dest = position + bytes.length;
+        while (this.serialized.length < dest) this.serialized.push(0);
+        for (let [index, val] of bytes.entries()) {
+            this.serialized[index + position] = bytes[index];
+        }
+    }
+    pushFunctionCall(args, proccode) {
+        // TODO: implement arguments
+        this.pushOpcode("INNER_PUSHFRAME");
+        this.align();
+        let frameAllocPosition = this.serialized.length;
+        this.pushId(0);
+        this.pushOpcode("INNER_PUSHID");
+        let returnAddr = this.pushNewCodeRef();
+        this.pushOpcode("INNER_SETFRAMEVAR");
+        this.pushId(0);
+
+        this.pushOpcode("INNER_JUMP");
+        this.align();
+        let callAddr = this.pushNewCodeRef();
+        this.satisfyCodeRef(returnAddr);
+        this.pushOpcode("INNER_POPFRAME");
+        this.align();
+        let frameDestroyPosition = this.serialized.length;
+        this.pushId(0);
+
+        this.projectIndex.getSymbol(this.sprite.id, symbolTypes.func, proccode).value
+            .then(thread => {
+                this.splice(argProcessors.id(thread.frame.maxSize), frameAllocPosition);
+                this.splice(argProcessors.id(thread.frame.maxSize), frameDestroyPosition);
+                this.satisfyCodeRef(callAddr, thread.entryPoint);
+            });
+    }
+    pushArg(value, process) {
+        if (process != argProcessors.string) this.align();
+        this.serialized.push(...process(value));
+    }
+    pushId(value) {
+        this.pushArg(value, argProcessors.id);
+    }
+    pushSymbolArg(type, id) {
+        this.align();
+        let place = this.serialized.length;
+        let placeholder = argProcessors.id(0);
+        this.serialized.push(...placeholder);
+        let value = this.projectIndex.getSymbol(this.sprite.id, type, id);
+        let process = argProcessors.id;
+        value.value.then((val) => {
+            if (val == undefined) console.warn("val", type, id, "satisfied with undefined");
+            let bytes = process(val);
+            this.splice(bytes, place);
+        });
+    }
+    pushVariableArg(id) {
+        let placeholder = argProcessors.id(0);
+
+        this.align();
+        let spriteIdPlace = this.serialized.length;
+        this.serialized.push(...placeholder);
+
+        this.align();
+        let varIdPlace = this.serialized.length;
+        this.serialized.push(...placeholder);
+
+        let value = this.projectIndex.getSymbol(this.sprite.id, symbolTypes.variable, id);
+
+        let process = argProcessors.id;
+        value.value.then((variable) => {
+            let [spriteId, varId] = variable;
+            this.splice(process(spriteId), spriteIdPlace);
+            this.splice(process(varId), varIdPlace);
+        });
+    }
+    pushOpcode(opcode) {
+        console.log("pushing opcode", opcode, "(program counter", this.serialized.length, ")");
+        let opcodeNum = opcodeEnum[opcode];
+        if(!opcodeNum) console.warn("opcode", opcode, "not found");
+        this.serialized.push(opcodeNum || 0);
+    }
+    pushCodeRef(ref) {
+        let placeholder = argProcessors.id(0);
+        this.align();
+        let place = this.serialized.length;
+        this.serialized.push(...placeholder);
+        ref.dest.then((dest) => {
+            this.splice(argProcessors.id(dest), place);
+        });
+    }
+    pushNewCodeRef() {
+        let resolve;
+        let ref = {
+            dest: null,
+            resolve: null,
+        };
+        ref.dest = new Promise((res) => {
+            ref.resolve = res;
+        });
+        this.pushCodeRef(ref);
+        return ref;
+    }
+    satisfyCodeRef(ref, offset) {
+        offset = offset || this.serialized.length;
+        ref.resolve(offset);
+    }
+    pushFuncs = {
+        NUM: (input) => {
+            this.pushOpcode("INNER_PUSHNUMBER");
+            this.pushArg(input.value[0], argProcessors.fraction);
+        },
+        POSNUM: "NUM",
+        WHOLENUM: "NUM",
+        INTNUM: "NUM",
+        ANGLENUM: (input) => {
+            this.pushOpcode("INNER_PUSHDEGREES");
+            let degrees = Number(input.value[0]);
+            degrees *= ((UINT32_MAX + 1) / 360);
+            this.pushArg(degrees, argProcessors.wholeNumber);
+        },
+        COLOR: (input) => {
+            console.error("COLOR");
+        },
+        TEXT: (input) => {
+            if (!isNaN(input.value[0])) {
+                this.pushFuncs.NUM(input);
+                return;
+            }
+            this.pushOpcode("INNER_PUSHTEXT");
+            this.pushArg(input.value[0], argProcessors.string);
+        },
+        BROADCAST: (input) => {
+            this.pushOpcode("INNER_PUSHID");
+            this.pushSymbolArg(symbolTypes.broadcast, input.value[0]);
+        },
+        VAR: (input) => {
+            this.pushOpcode("INNER_FETCHVAR");
+            this.pushVariableArg(input.value[1], null);
+        },
+        LIST: (input) => {
+            console.error("LIST");
+        },
+        OBJECTREF: (input) => {
+            let block = this.blocks[input.value];
+            this.compileBlock(block);
+        }
+    }
+    pushInput(block, input) {
+        if (!input) {
+            console.warn("empty input pased to `pushInput`");
+            return;
+        }
+        let pushFunc = input.type;
+        while (typeof pushFunc === "string") {
+            pushFunc = this.pushFuncs[pushFunc];
+        }
+        if (pushFunc === undefined) {
+            console.error("pushFuncs does not contain value for", input);
+            return;
+        }
+        pushFunc(input);
+    }
+    compileBlock(block) {
+        block = processBlock(block, this.blocks);
+        if (block.opcode.startsWith("SOUND")) {
+            console.warn("skipping sound block");
+            return;
+        }
+        let specialFunction = specialFunctions[block.opcode];
+        if (specialFunction !== undefined) {
+            specialFunction(block, this);
+        }
+        else {
+            for (let input of Object.values(block.inputs)) {
+                this.pushInput(block, input);
+            }
+            this.pushOpcode(block.opcode);
+            // all blocks with fields should have explicit handlers
+            for (let field of Object.values(block.fields)) {
+                reportField(block, field);
+            }
+        }
+        if (block.next) this.compileBlock(this.blocks[block.next]);
+    }
+}
+
+export function processInput(input) {
+    let valueAnnotation = {
+        type: null,
+        value: null
+    };
+    let inputType = input[0];
+    let value = input[1];
+    // shadows aren't important and we don't use them for anything, but keeping track of them helps document the format better.
+    let shadow = null;
+    if (inputType === definitions.unobscuredShadow) {
+        shadow = input[1];
+    }
+    else if (inputType === definitions.obscuredShadow) {
+        shadow = input[2];
+    }
+    // strings are always references to objects
+    if (typeof value === "string") {
+        valueAnnotation.type = "OBJECTREF";
+        valueAnnotation.value = value;
+        return valueAnnotation;
+    }
+    if (!value) return null;
+    valueAnnotation.type = definitions[value[0]];
+    valueAnnotation.value = value.slice(1);
+    return valueAnnotation;
+}
+
+function processBlock(block, blocks) {
+    block.opcode = block.opcode.toUpperCase();
+    let processed = {
+        opcode: block.opcode,
+        next: block.next,
+        parent: block.parent,
+        mutation: block.mutation,
+        topLevel: block.topLevel,
+        inputs: {},
+        fields: {},
+    };
+    for (let [key, value] of Object.entries(block.inputs)) {
+        processed.inputs[key] = processInput(value);
+    }
+    for (let [key, value] of Object.entries(block.fields)) {
+        processed.fields[key] = value;
+    }
+    return processed;
+}
+
+let symbolTypes = {
+    broadcast: "broadcast",
+    backdrop: "backdrop",
+    sprite: "sprite",
+    stage: "stage",
+    variable: "variable",
+    costume: "costume",
+    func: "func",
+};
+
+let ownerlessSymbolTypes = {
+    broadcast: "broadcast",
+    backdrop: "backdrop",
+    sprite: "sprite",
+    stage: "stage",
+    variable: "variable"
+};
+
+const specialFunctions = {
+    MOTION_POINTTOWARDS_MENU: (block, thread) => {
+        let to = block.fields.TOWARDS[0];
+        thread.pushOpcode("INNER_FETCHPOSITION");
+        const fieldvalues = {
+            _random_: -1,
+            _mouse_: -2,
+        };
+        let fieldvalue = fieldvalues[to];
+        if (fieldvalue) thread.pushId(fieldvalue);
+        else thread.pushSymbolArg(symbolTypes.sprite, to);
+    },
+
+    LOOKS_CHANGEEFFECTBY: () => {},
+    LOOKS_SETEFFECTTO: () => {},
+
+    PROCEDURES_CALL: (block, thread) => {
+        thread.pushFunctionCall([], block.mutation.proccode);
+    },
+
+    OPERATOR_MATHOP: (block, thread) => {
+        thread.pushInput(block, block.inputs.NUM);
+        thread.pushOpcode("OPERATOR_MATHOP");
+        let opId = ["abs", "floor", "ceiling", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "ln", "log", "e ^", "10 ^"].indexOf(block.fields.OPERATOR[0]);
+        thread.pushId(opId);
+    },
+
+    SENSING_OF: (block, thread) => {
+        thread.pushInput(block, block.inputs.OBJECT);
+        let propertyEnum = 0;
+        switch (block.fields.PROPERTY[0]) {
+            case "backdrop #":
+            case "costume #":
+                propertyEnum = -1;
+                break;
+            case "backdrop name":
+            case "costume name":
+                propertyEnum = -2;
+                break;
+            case "volume":
+                propertyEnum = -3;
+                break;
+            case "x position":
+                propertyEnum = -4;
+                break;
+            case "y position":
+                propertyEnum = -5;
+                break;
+            case "direction":
+                propertyEnum = -6;
+                break;
+            case "size":
+                propertyEnum = -7;
+                break;
+        }
+        thread.pushOpcode("SENSING_OF");
+        if (propertyEnum < 0) {
+            thread.pushId(propertyEnum);
+        }
+        else {
+            thread.pushVariableArg(block.fields.PROPERTY[0]);
+        }
+    },
+
+    SENSING_OF_OBJECT_MENU: (block, thread) => {
+        thread.pushOpcode("INNER_PUSHID");
+        let target = block.fields.OBJECT[0];
+        if (target == "_stage_") {
+            thread.pushId(0);
+        }
+        else {
+            thread.pushSymbolArg(symbolTypes.sprite, target);
+        }
+    },
+
+    CONTROL_STOP: (block, thread) => {
+        let options = ["this script", "all", "other scripts in sprite"];
+        let index = options.indexOf(block.fields.STOP_OPTION[0]);
+        thread.pushOpcode("INNER_PUSHID");
+        thread.pushId(index);
+        thread.pushOpcode("CONTROL_STOP");
+    },
+
+    CONTROL_CREATE_CLONE_OF_MENU: (block, thread) => {
+        thread.pushOpcode("INNER_PUSHID");
+        if (block.fields.CLONE_OPTION[0] === "_myself_") {
+            thread.pushId(-1);
+        }
+        else {
+            thread.pushSymbolArg(symbolTypes.sprite, block.fields.CLONE_OPTION[0]);
+        }
+    },
+
+    LOOKS_SAYFORSECS: (block, thread) => {
+        let framePos = thread.framePos.getStorage(1);
+        thread.pushInput(block, block.inputs.MESSAGE);
+        thread.pushOpcode("LOOKS_SAY");
+        thread.pushInput(block, block.inputs.SECS);
+        thread.pushOpcode("CONTROL_WAIT");
+        thread.pushId(framePos);
+        thread.pushOpcode("INNER__WAITITERATION");
+        thread.pushId(framePos);
+        thread.pushOpcode("INNER_PUSHTEXT");
+        thread.pushArg("", argProcessors.string);
+        thread.pushOpcode("LOOKS_SAY");
+        thread.framePos.returnStorage(1);
+    },
+
+    LOOKS_THINKFORSECS: (block, thread) => {
+        let framePos = thread.framePos.getStorage(1);
+        thread.pushInput(block, block.inputs.MESSAGE);
+        thread.pushOpcode("LOOKS_SAY");
+        thread.pushInput(block, block.inputs.SECS);
+        thread.pushOpcode("CONTROL_WAIT");
+        thread.pushId(framePos);
+        thread.pushOpcode("INNER__WAITITERATION");
+        thread.pushId(framePos);
+        thread.pushOpcode("INNER_PUSHTEXT");
+        thread.pushArg("", argProcessors.string);
+        thread.pushOpcode("LOOKS_THINK");
+        thread.framePos.returnStorage(1);
+    },
+
+    LOOKS_SWITCHBACKDROPTO: (block, thread) => {
+        for (let input of Object.values(block.inputs)) thread.pushInput(block, input);
+        thread.pushOpcode(block.opcode);
+    },
+
+    LOOKS_BACKDROPS: (block, thread) => {
+        let costumeName = block.fields.BACKDROP[0];
+        thread.pushOpcode("INNER_PUSHID");
+        thread.pushSymbolArg(symbolTypes.backdrop, costumeName);
+    },
+
+    LOOKS_SWITCHCOSTUMETO: (block, thread) => {
+        for (let input of Object.values(block.inputs)) thread.pushInput(block, input);
+        thread.pushOpcode(block.opcode);
+    },
+
+    LOOKS_COSTUME: (block, thread) => {
+        let costumeName = block.fields.COSTUME[0];
+        thread.pushOpcode("INNER_PUSHID");
+        thread.pushSymbolArg(symbolTypes.costume, costumeName);
+    },
+
+    SENSING_TOUCHINGOBJECTMENU: (block, thread) => {
+        let to = block.fields.TOUCHINGOBJECTMENU[0];
+        const fieldValues = {
+            _mouse_: -1,
+            _edge_: -2,
+        };
+        let fieldValue = fieldValues[to];
+        if (fieldValue) {
+            thread.pushId(fieldValue);
+        }
+        else {
+            thread.pushSymbolArg(symbolTypes.sprite, to);
+        }
+    },
+
+    SENSING_TOUCHINGOBJECT: (block, thread) => {
+        thread.pushOpcode(block.opcode);
+        for (let input of Object.values(block.inputs)) thread.pushInput(block, input);
+    },
+
+    CONTROL_REPEAT: (block, thread) => {
+        thread.pushInput(block, block.inputs.TIMES);
+        let framePos = thread.frame.getStorage(2);
+        thread.pushOpcode("INNER_LOOPREPEATINIT");
+        thread.pushId(framePos);
+        let beginTarget = thread.serialized.length;
+        thread.pushOpcode("INNER_LOOPREPEAT");
+        thread.pushId(framePos);
+        let breakout = thread.pushNewCodeRef();
+        thread.pushInput(block, block.inputs.SUBSTACK)
+        thread.pushOpcode("INNER_LOOPJUMP");
+        let begin = thread.pushNewCodeRef();
+        thread.satisfyCodeRef(begin, beginTarget);
+        thread.satisfyCodeRef(breakout);
+        thread.frame.returnStorage(2);
+    },
+
+    CONTROL_WAIT: (block, thread) => {
+        let framePos = thread.frame.getStorage(1);
+        for (let input of Object.values(block.inputs)) {
+            thread.pushInput(block, input);
+        }
+        thread.pushOpcode(block.opcode);
+        thread.pushId(framePos);
+        thread.pushOpcode("INNER__WAITITERATION");
+        thread.pushId(framePos);
+        thread.frame.returnStorage(1);
+    },
+
+    CONTROL_WAIT_UNTIL: (block, thread) => {
+        let beginTarget = thread.serialized.length;
+        thread.pushInput(block, block.inputs.CONDITION);
+        thread.pushOpcode("INNER_JUMPIF");
+        let breakout = thread.pushNewCodeRef();
+        thread.pushOpcode("INNER_LOOPJUMP");
+        let begin = thread.pushNewCodeRef();
+        thread.satisfyCodeRef(begin, beginTarget);
+        thread.satisfyCodeRef(breakout);
+    },
+
+    CONTROL_REPEAT_UNTIL: (block, thread) => {
+        let beginTarget = thread.serialized.length;
+        thread.pushInput(block, block.inputs.CONDITION);
+        thread.pushOpcode("INNER_JUMPIF");
+        let breakout = thread.pushNewCodeRef();
+        thread.pushInput(block, block.inputs.SUBSTACK);
+        thread.pushOpcode("INNER_LOOPJUMP");
+        let begin = thread.pushNewCodeRef();
+        thread.satisfyCodeRef(begin, beginTarget);
+        thread.satisfyCodeRef(breakout);
+    },
+
+    CONTROL_FOREVER: (block, thread) => {
+        let beginTarget = thread.serialized.length;
+        thread.pushInput(block, block.inputs.SUBSTACK);
+        thread.pushOpcode("INNER_LOOPJUMP");
+        let begin = thread.pushNewCodeRef();
+        thread.satisfyCodeRef(begin, beginTarget);
+    },
+
+    CONTROL_IF: (block, thread) => {
+        thread.pushInput(block, block.inputs.CONDITION);
+        thread.pushOpcode("INNER_JUMPIFNOT");
+        let falseCondition = thread.pushNewCodeRef();
+        thread.pushInput(block, block.inputs.SUBSTACK);
+        thread.satisfyCodeRef(falseCondition);
+    },
+
+    CONTROL_IF_ELSE: (block, thread) => {
+        thread.pushInput(block, block.inputs.CONDITION);
+        thread.pushOpcode("INNER_JUMPIFNOT");
+        let falseCondition = thread.pushNewCodeRef();
+        thread.pushInput(block, block.inputs.SUBSTACK);
+        thread.pushOpcode("INNER_JUMP");
+        let breakout = thread.pushNewCodeRef();
+        thread.satisfyCodeRef(falseCondition);
+        thread.pushInput(block, block.inputs.SUBSTACK2);
+        thread.satisfyCodeRef(breakout);
+    },
+
+    LOOKS_COSTUMENUMBERNAME: (block, thread) => {
+        thread.pushOpcode(block.opcode);
+        if (block.fields.NUMBER_NAME[0] == "number") {
+            thread.pushId(0);
+        }
+        else if (block.fields.NUMBER_NAME[0] == "name") {
+            thread.pushId(1);
+        }
+    },
+
+    SENSING_KEYOPTIONS: (block, thread) => {
+        thread.pushOpcode("INNER_PUSHNUMBER");
+        let option = block.fields.KEY_OPTION[0];
+        let input = inputMap[option];
+        thread.pushArg(input, argProcessors.fraction);
+    },
+
+    MOTION_SETROTATIONSTYLE: (block, thread) => {
+        thread.pushOpcode(block.opcode);
+        thread.pushId(["left-right", "don't rotate", "all around"].indexOf(block.fields.STYLE[0]));
+    },
+
+    MOTION_GOTO_MENU: (block, thread) => {
+        let to = block.fields.TO[0];
+        if (to === undefined) {
+            console.error("incorrect assumption about the definite shape of motion_goto_menu. block is", block);
+            return;
+        }
+        thread.pushOpcode("INNER_FETCHPOSITION");
+        const fieldvalues = {
+            _random_: -1,
+            _mouse_: -2,
+        };
+        let fieldvalue = fieldvalues[to];
+        if (fieldvalue) {
+            thread.pushId(fieldvalue);
+        }
+        else {
+            thread.pushSymbolArg(symbolTypes.sprite, to);
+        }
+    },
+
+    MOTION_GOTO: (block, thread) => {
+        for (let input of Object.values(block.inputs)) thread.pushInput(block, input);
+        thread.pushOpcode("MOTION_GOTOXY");
+    },
+
+    MOTION_GLIDETO_MENU: (block, thread) => {
+        let to = block.fields.TO[0];
+        if (to === undefined) {
+            console.error("incorrect assumption about the definite shape of motion_glideto_menu. block is", block);
+            return;
+        }
+        thread.pushOpcode("INNER_FETCHPOSITION");
+        const fieldValues = {
+            _random_: -1,
+            _mouse_: -2,
+        };
+        let fieldvalue = fieldvalues[to];
+        if (fieldvalue) {
+            thread.pushId(fieldvalue);
+        }
+        else {
+            thread.pushSymbolArg(symbolTypes.sprite, to);
+        }
+    },
+
+    MOTION_GLIDESECSTOXY: (block, thread) => {
+        let framePos = thread.frame.getStorage(5);
+        for (let input of Object.values(block.inputs)) thread.pushInput(block, input);
+        thread.pushOpcode(block.opcode);
+        thread.pushId(framePos);
+        thread.pushOpcode("INNER__GLIDEITERATION");
+        thread.pushId(framePos);
+        thread.frame.returnStorage(5);
+    },
+
+    MOTION_GLIDETO: (block, thread) => {
+        let framePos = thread.frame.getStorage(5);
+        for (let input of Object.values(block.inputs)) thread.pushInput(block, input);
+        thread.pushOpcode("MOTION_GLIDESECSTOXY");
+        thread.pushId(framePos);
+        thread.pushOpcode("INNER__GLIDEITERATION");
+        thread.pushId(framePos);
+        thread.frame.returnStorage(5);
+    },
+
+    MOTION_XPOSITION: (block, thread) => {
+        thread.pushOpcode(block.opcode);
+        thread.pushId(-1);
+    },
+
+    MOTION_YPOSITION: (block, thread) => {
+        thread.pushOpcode(block.opcode);
+        thread.pushId(-1);
+    },
+
+    DATA_SETVARIABLETO: (block, thread) => {
+        for (let input of Object.values(block.inputs)) thread.pushInput(block, input);
+        thread.pushOpcode(block.opcode);
+        thread.pushVariableArg(block.fields.VARIABLE[1]);
+    },
+
+    DATA_CHANGEVARIABLEBY: (block, thread) => {
+        for (let input of Object.values(block.inputs)) thread.pushInput(block, input);
+        thread.pushOpcode(block.opcode);
+        thread.pushVariableArg(block.fields.VARIABLE[1]);
+    },
+};
+
 
 const UINT32_MAX = 4294967295;
 
@@ -59,6 +860,10 @@ export const opcodeArray = [
     "OPERATOR_MOD",
     "OPERATOR_ROUND",
     "OPERATOR_MATHOP",
+    "INNER_PUSHFRAME",
+    "INNER_POPFRAME",
+    "INNER_SETFRAMEVAR",
+    "INNER_GETFRAMEVAR",
     "INNER_DEBUGEXPRESSION",
     "INNER_PARTITION_BEGINSTATEMENTS",
     "DATA_SETVARIABLETO",
@@ -67,15 +872,14 @@ export const opcodeArray = [
     "DATA_HIDEVARIABLE",
     "EVENT_BROADCAST",
     "INNER_LOOPJUMP",
+    "INNER_LOOPREPEATINIT",
+    "INNER_LOOPREPEAT",
     "CONTROL_CREATE_CLONE_OF",
     "CONTROL_WAIT",
     "CONTROL_WAIT_UNTIL",
     "CONTROL_CREATE_CLONE_OF_MENU",
     "CONTROL_DELETE_THIS_CLONE",
     "CONTROL_STOP",
-    "INNER_LOCALS_PUSHARG",
-    "INNER_LOCALS_POPARG",
-    "INNER_LOCALS_GETARG",
     "INNER_JUMPIF",
     "INNER_JUMPIFNOT",
     "INNER_JUMP",
@@ -126,23 +930,23 @@ export const opcodeEnum = Object.fromEntries(
 );
 
 const enums = {
-  unobscuredShadow: 1,
-  noShadow: 2,
-  obscuredShadow: 3,
-  NUM: 4,
-  POSNUM: 5,
-  WHOLENUM: 6,
-  INTNUM: 7,
-  ANGLENUM: 8,
-  COLOR: 9,
-  TEXT: 10,
-  BROADCAST: 11,
-  VAR: 12,
-  LIST: 13,
-  OBJECTREF: 14,
+    unobscuredShadow: 1,
+    noShadow: 2,
+    obscuredShadow: 3,
+    NUM: 4,
+    POSNUM: 5,
+    WHOLENUM: 6,
+    INTNUM: 7,
+    ANGLENUM: 8,
+    COLOR: 9,
+    TEXT: 10,
+    BROADCAST: 11,
+    VAR: 12,
+    LIST: 13,
+    OBJECTREF: 14,
 };
 
-const definitions = {};
+export const definitions = {};
 for (const [key, value] of Object.entries(enums)) {
   definitions[key] = value;
   definitions[value] = key; // reverse mapping
@@ -171,641 +975,151 @@ export const events = [
 ];
 
 // endianness should be supplied as a string, or not passed at all. Current design only respects little-endian.
-function toScaledInt32Tuple(number, endianness) {
-    if (endianness !== undefined && endianness !== "little") {
-        console.error("toScaledInt32Tuple only handles little endian values");
-        return undefined;
-    }
-    let whole = Math.floor(number);
-    let fraction = number - whole;
-
-
-    // fraction is given in scale 0 -> 1
-    // I need to transform it to the scale 0 -> 65k (16bit int limit)
-    
-    fraction *= 65535;
-    fraction = Math.round(fraction);
-
-    let components = new Uint16Array([fraction, whole]);
-    let componentBytes = new Uint8Array([fraction, fraction >> 8, whole, whole >> 8]); // All params implicitly masked by 8
-    return componentBytes;
-}
-
-function toBytes(string) {
-    const bytes = new TextEncoder().encode(string);
-    return bytes;
-}
-
-function toCodeLiteral(number, byteSize, endianness) {
-    if (endianness !== undefined && endianness !== "little") {
-        console.error("toCodeLiteral only handles little endian values");
-        return undefined;
-    }
-    let bytes = [];
-    for (let i = 0; i < byteSize; i++) {
-        bytes.push(number & 0xff);
-        number >>= 8;
-    }
-    return bytes;
-}
-
-function alignCode(code, mask) {
-    while (code.length != (code.length & ~mask)) {
-        code.push(0);
-    }
-}
-
-function pushArg(code, arg) {
-    alignCode(code, 3);
-    code.push(...arg);
-}
-
-let globalObjectIndex = {
-    sprites: {},
-    broadcasts: {},
-    backdrops: {},
-    variables: {},
-    costumes: {},
-    stage: null,
-    functions: {},
-};
-
-export function indexObjects(project) {
-    globalObjectIndex = {
-        sprites: {},
-        broadcasts: {},
-        backdrops: {},
-        variables: {},
-        costumes: {},
-        stage: null,
-        functions: {},
-        functionParams: {},
-        functionArgs: {},
-    };
-    let spriteCount = 0;
-    let broadcastCount = 0;
-    let backdropCount = 1;
-    let variableCounts = {};
-    let costumeCounts = {};
-    let stage;
-    let objectIndex = globalObjectIndex;
-    for (let target of project.targets) {
-        objectIndex.functions[target.name] = {};
-        if (target.isStage) {
-            stage = target;
-        }
-        variableCounts[target.name] = 0;
-        costumeCounts[target.name] = 1;
-        objectIndex.sprites[target.name] = objectIndex.sprites[target.name] || spriteCount++;
-        for (let broadcast in target.broadcasts) {
-            objectIndex.broadcasts[broadcast] = objectIndex.broadcasts[broadcast] || broadcastCount++;
-        }
-        let spriteIndex = objectIndex.sprites[target.name];
-        for (let variable in target.variables) {
-            let varIndex = objectIndex.variables[variable];
-            if (varIndex === undefined) varIndex = variableCounts[target.name]++;
-            else varIndex = varIndex[1];
-            objectIndex.variables[variable] = [spriteIndex, varIndex];
-        }
-        for (let costume of target.costumes) {
-            let key = JSON.stringify([target.name, costume.name]);
-            let costumeIndex = objectIndex.costumes[key] || costumeCounts[target.name]++;
-            objectIndex.costumes[key] = costumeIndex;
-        }
-    }
-    for (let backdrop of stage.costumes) {
-        objectIndex.backdrops[backdrop.name] = backdropCount++;
-    }
-    return objectIndex;
-}
-
-function findSprite(name) {
-    return globalObjectIndex.sprites[name];
-}
-
-function findCostume(spriteName, costumeName) {
-    return globalObjectIndex.costumes[JSON.stringify([spriteName, costumeName])]
-}
-
-function findBroadcast(name, id) {
-    return globalObjectIndex.broadcasts[id];
-}
-
-function findBackdrop(name) {
-    return globalObjectIndex.backdrops[name];
-}
-
-function findVariable(name, id) {
-    return globalObjectIndex.variables[id];
-}
-
-function findFunction(name) {
-}
-
-const pushFuncs = {
-    NUM: (input, code) => {
-        let number = Number(input.value[0]);
-        let opcode = "INNER_PUSHNUMBER";
-        code.push(opcode);
-        pushArg(code, toScaledInt32Tuple(number));
-    },
-    POSNUM: "NUM",
-    WHOLENUM: "NUM",
-    INTNUM: "NUM",
-    ANGLENUM: (input, code) => {
-        let degrees = Number(input.value[0]);
-        let opcode = "INNER_PUSHDEGREES";
-        code.push(opcode);
-        degrees *= ((UINT32_MAX + 1) / 360);
-        pushArg(code, toCodeLiteral(degrees, 4));
-    },
-    COLOR: (input) => {
-        console.error("COLOR");
-    },
-    TEXT: (input, code) => {
-        if (!isNaN(input.value[0])) {
-            pushFuncs.NUM(input, code);
-            return;
-        }
-        code.push("INNER_PUSHTEXT");
-        code.push(...toBytes(input.value[0]));
-        code.push(0);
-    },
-    BROADCAST: (input, code) => {
-        code.push("INNER_PUSHID");
-        let eventIndex = findBroadcast(input.value[0], input.value[1]);
-        pushArg(code, toCodeLiteral(eventIndex, 2));
-    },
-    VAR: (input, code, blocks) => {
-        code.push("INNER_FETCHVAR");
-        let [spriteIndex, varIndex] = findVariable(...input.value);
-        pushArg(code, toCodeLiteral(spriteIndex, 2));
-        pushArg(code, toCodeLiteral(varIndex, 2));
-    },
-    LIST: (input) => {
-        console.error("LIST");
-    },
-    OBJECTREF: (input, code, blocks, owner) => {
-        let block = blocks[input.value];
-        while (block != null) {
-            compileBlock(block, code, blocks, owner);
-            block = blocks[block.next];
-        }
-    }
-}
-
-export function processInput(input) {
-    let valueAnnotation = {
-        type: null,
-        value: null
-    };
-    let inputType = input[0];
-    let value = input[1];
-    // shadows aren't important and we don't use them for anything, but keeping track of them helps document the format better.
-    let shadow = null;
-    if (inputType === definitions.unobscuredShadow) {
-        shadow = input[1];
-    }
-    else if (inputType === definitions.obscuredShadow) {
-        shadow = input[2];
-    }
-    // strings are always references to objects
-    if (typeof value === "string") {
-        valueAnnotation.type = "OBJECTREF";
-        valueAnnotation.value = value;
-        return valueAnnotation;
-    }
-    if (!value) return null;
-    valueAnnotation.type = definitions[value[0]];
-    valueAnnotation.value = value.slice(1);
-    return valueAnnotation;
-}
-
-export function processField(field) {
-    return field;
-    // TODO: figure out the general shape of scratch fields and handle them here.
-}
-
-export function processBlock(block) {
-    // stripped version of the block that contains everything we need
-    block.opcode = block.opcode.toUpperCase();
-    let processed = {
-        opcode: block.opcode,
-        next: block.next,
-        parent: block.parent,
-        topLevel: block.topLevel,
-        inputs: {},
-        fields: {},
-    };
-    for (let [key, value] of Object.entries(block.inputs)) {
-        processed.inputs[key] = processInput(value);
-    }
-    for (let [key, value] of Object.entries(block.fields)) {
-        processed.fields[key] = processField(value);
-    }
-    return processed;
-}
-
-export function processBlocks(blocks) {
-    for (let [key, value] of Object.entries(blocks)) {
-        blocks[key] = processBlock(value);
-    }
-}
-
-function pushInput(input, code, blocks, owner) {
-    let pushFunc = input.type;
-    while (typeof pushFunc === "string") {
-        pushFunc = pushFuncs[pushFunc];
-    }
-    if (pushFunc === undefined) {
-        console.error("pushFuncs does not contain value for", input);
-        return;
-    }
-    pushFunc(input, code, blocks, owner);
-}
-
-function inlineFunction(block, code, blocks, owner) {
-    let newCode = [];
-    let functionBlock = 0;
-}
-
 function reportField(block, field, code) {
-    console.log("in pushField:", block, field);
+    console.warn("in pushField:", block, field);
 }
 
 function getEventCondition(hat, project) {
-    let defaultFunc = () => {return 0};
+    let defaultFunc = () => {return Promise.resolve(0)};
     const eventFuncs = {
         EVENT_WHENKEYPRESSED: () => {
-            return inputMap[hat.fields.KEY_OPTION[0]];
+            return Promise.resolve(inputMap[hat.fields.KEY_OPTION[0]] || -1);
         },
         EVENT_WHENBROADCASTRECEIVED: () => {
-            return findBroadcast(...hat.fields.BROADCAST_OPTION);
+            return project.getSymbol(null, symbolTypes.broadcast, hat.fields.BROADCAST_OPTION[0]).value;
         },
         EVENT_WHENBACKDROPSWITCHESTO: () => {
-            return findBackdrop(hat.fields.BACKDROP[0]);
+            return project.getSymbol(null, symbolTypes.backdrop, hat.fields.BACKDROP[0]).value;
         },
         CONTROL_START_AS_CLONE: defaultFunc,
         EVENT_WHENFLAGCLICKED: defaultFunc,
         EVENT_WHENTHISSPRITECLICKED: defaultFunc,
         EVENT_WHENGREATERTHAN: defaultFunc,
     };
-    return eventFuncs[hat.opcode]();
+    if (eventFuncs[hat.opcode]) return eventFuncs[hat.opcode]();
+    return {};
 }
 
-// Initially, I optimized certain opcodes by cutting out "middleman" opcodes whose purpose is only to load data for the opcode which calls them.
-// My VM is capable of loading values directly from the text of the bytecode rather than the normal method, which is to first push to the stack and then pop from it.
-// Scratch often uses dynamic inputs instead of fields, even when the property cannot be chosen dynamically at runtime.
-// Giving myself some charity, scratch is incredibly inconsistent about what it considers an "input" vs. a "field".
-// The VM was architectured to optimize cases where an "input" really cannot change at runtime and just read them as fields for "simplicity".
-// It did not turn out to be simpler, and in fact led to a much higher demand on the programmer to find where inputs are really inputs.
-// This was an example of premature optimization, as the VM itself runs plenty quickly, and the special cases it requires the programmer to handle are not worth the complexity.
-// The inconsistent strategy you will see among these opcode handlers is reflective of a pivot from the prior strategy to a simpler interpretation where inputs are trusted as inputs.
-// A refactor is needed to bring everything up to consistency.
-// This will allow the list of special functions to be much smaller.
+function newSprite() {
+    return {
+        name: null,
+        id: null,
+        body: {},
+        blocks: {},
+        threads: [],
+    };
+}
 
-let specialFunctions = {
-    LOOKS_CHANGEEFFECTBY: () => {},
-    LOOKS_SETEFFECTTO: () => {},
-    PROCEDURES_CALL: (block, code, blocks, owner) => {
-        // look up the positional arguments for the function with this name
-        // push those from the input list in order
-        // push the address of the next opcode
-        // look up the code position of the function with this name
-        // jump to it
-    },
-    OPERATOR_MATHOP: (block, code, blocks, owner) => {
-        pushInput(block.inputs.NUM, code, blocks, owner);
-        code.push("OPERATOR_MATHOP");
-        pushArg(code, toCodeLiteral(["abs", "floor", "ceiling", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "ln", "log", "e ^", "10 ^"].indexOf(block.fields.OPERATOR[0]), 2))
-        console.log(code);
-    },
-    SENSING_OF: (block, code, blocks, owner) => {
-        console.log(block.inputs);
-        pushInput(block.inputs.OBJECT, code, blocks, owner);
-        let propertyEnum = -1;
-        switch (block.fields.PROPERTY[0]) {
-            case "backdrop #":
-            case "costume #":
-                propertyEnum = 0;
-                break;
-            case "backdrop name":
-            case "costume name":
-                propertyEnum = 1;
-                break;
-            case "volume": 
-                propertyEnum = 2;
-                break;
-            case "x position":
-                propertyEnum = 3;
-                break;
-            case "y position":
-                propertyEnum = 4;
-                break;
-            case "direction":
-                propertyEnum = 5
-                break;
-            case "size":
-                propertyEnum = 6;
-                break;
-            default:
-                propertyEnum = 7 + findVariable(block.fields.PROPERTY[0], null);
-        }
-        code.push("SENSING_OF");
-        pushArg(code, toCodeLiteral(propertyEnum, 2));
-    },
-    SENSING_OF_OBJECT_MENU: (block, code, blocks, owner) => {
-        let target = block.fields.OBJECT[0];
-        let targetIndex;
-        if (target == "_stage_") targetIndex = 0;
-        else targetIndex = findSprite(target);
-        code.push("INNER_PUSHID");
-        pushArg(code, toCodeLiteral(targetIndex, 2));
-    },
-    CONTROL_STOP: (block, code, blocks, owner) => {
-        let options = ["this script", "all", "other scripts in sprite"];
-        let index = options.indexOf(block.fields.STOP_OPTION[0]);
-        code.push("INNER_PUSHID");
-        pushArg(code, toCodeLiteral(index, 2));
-        code.push("CONTROL_STOP");
-    },
-    CONTROL_CREATE_CLONE_OF_MENU: (block, code, blocks, owner) => {
-        let cloneIndex = findSprite(block.fields.CLONE_OPTION[0]);
-        if (cloneIndex === undefined) cloneIndex = -1;
-        code.push("INNER_PUSHID");
-        pushArg(code, toCodeLiteral(cloneIndex, 2));
-    },
-    LOOKS_SAYFORSECS: (block, code, blocks, owner) => {
-        pushInput(block.inputs.MESSAGE, code, blocks, owner);
-        code.push("LOOKS_SAY");
-        pushInput(block.inputs.SECS, code, blocks, owner);
-        code.push("CONTROL_WAIT");
-        code.push("INNER__WAITITERATION");
-        code.push("INNER_PUSHTEXT");
-        code.push(0);
-        code.push("LOOKS_SAY");
-    },
-    LOOKS_THINKFORSECS: (block, code, blocks, owner) => {
-        pushInput(block.inputs.MESSAGE, code, blocks, owner);
-        code.push("LOOKS_SAY");
-        pushInput(block.inputs.SECS, code, blocks, owner);
-        code.push("CONTROL_WAIT");
-        code.push("INNER__WAITITERATION");
-        code.push("INNER_PUSHTEXT");
-        code.push(0);
-        code.push("LOOKS_THINK");
-    },
-    LOOKS_SWITCHBACKDROPTO: (block, code, blocks, owner) => {
-        code.push(block.opcode);
-        for (let input of Object.values(block.inputs)) pushInput(input, code, blocks, owner);
-    },
-    LOOKS_BACKDROPS: (block, code, blocks, owner) => {
-        let costumeName = block.fields.BACKDROP[0];
-        let spriteName = owner.name;
-        let costumeIndex = (findCostume(spriteName, costumeName));
-        pushArg(code, toCodeLiteral(costumeIndex, 2));
-    },
-    LOOKS_SWITCHCOSTUMETO: (block, code, blocks, owner) => {
-        code.push(block.opcode);
-        for (let input of Object.values(block.inputs)) pushInput(input, code, blocks, owner);
-    },
-    LOOKS_COSTUME: (block, code, blocks, owner) => {
-        let costumeName = block.fields.COSTUME[0];
-        let spriteName = owner.name;
-        let costumeIndex = (findCostume(spriteName, costumeName));
-        pushArg(code, toCodeLiteral(costumeIndex, 2));
-    },
-    SENSING_TOUCHINGOBJECTMENU: (block, code) => {
-        let to = block.fields.TOUCHINGOBJECTMENU[0];
-        if (to === undefined) {
-            console.error("incorrect assumption about the definite shape of motion_goto_menu. block is", block);
-            return;
-        }
-        const fieldValues = {
-            _mouse_: -1,
-            _edge_: -2,
-        };
-        let fieldValue = fieldValues[to] || findSprite(to);
-        pushArg(code, toCodeLiteral(fieldValue, 2));
-    },
-    SENSING_TOUCHINGOBJECT: (block, code, blocks, owner) => {
-        code.push(block.opcode);
-        for (let input of Object.values(block.inputs)) pushInput(input, code, blocks, owner);
-    },
-    CONTROL_REPEAT: (block, code, blocks, owner) => {
-        code.push("INNER_LOOPINIT"); // get a loop frame on the loop stack to track repetition
-        let loopBegin = code.length;
-        pushInput(block.inputs.TIMES, code, blocks, owner);
-        code.push("INNER_JUMPIFREPEATDONE");
-        let loopBreakPosition = code.length;
-        alignCode(code, 3);
-        code.push(0, 0); // to be filled with end-of-loop
-        pushInput(block.inputs.SUBSTACK, code, blocks, owner);
-        code.push("INNER_LOOPINCREMENT");
-        code.push("INNER_LOOPJUMP");
-        pushArg(code, toCodeLiteral(loopBegin, 2))
-        code[loopBreakPosition] = (code.length & 0xff);
-        code[loopBreakPosition + 1] = ((code.length >> 8) & 0xff);
-    },
-    CONTROL_WAIT: (block, code, blocks, owner) => {
-        for (let input of Object.values(block.inputs)) {
-            pushInput(input, code, blocks, owner);
-        }
-        code.push(block.opcode);
-        code.push("INNER__WAITITERATION");
-    },
-    CONTROL_WAIT_UNTIL: (block, code, blocks, owner) => {
-        let beginningIndex = code.length;
-        pushInput(block.inputs.CONDITION, code, blocks, owner);
-        code.push("INNER_JUMPIF");
-        alignCode(code, 3);
-        let argIndex = code.length;
-        code.push(...[0, 0]);
-        code.push("INNER_LOOPJUMP");
-        pushArg(code, toCodeLiteral(beginningIndex, 2));
-        code[argIndex] = (code.length & 0xff);
-        code[argIndex + 1] = ((code.length >> 8) & 0xff);
-    },
-    CONTROL_REPEAT_UNTIL: (block, code, blocks, owner) => {
-        let beginningIndex = code.length;
-        pushInput(block.inputs.CONDITION, code, blocks, owner);
-        code.push("INNER_JUMPIF");
-        alignCode(code, 3);
-        let argIndex = code.length;
-        code.push(...[0, 0]);
-        pushInput(block.inputs.SUBSTACK, code, blocks, owner);
-        code.push("INNER_LOOPJUMP");
-        pushArg(code, toCodeLiteral(beginningIndex, 2));
-        code[argIndex] = (code.length & 0xff);
-        code[argIndex + 1] = ((code.length >> 8) & 0xff);
-    },
-    CONTROL_FOREVER: (block, code, blocks, owner) => {
-        let beginning = code.length;
-        pushInput(block.inputs.SUBSTACK, code, blocks, owner);
-        code.push("INNER_LOOPJUMP");
-        pushArg(code, toCodeLiteral(beginning, 2));
-    },
-    CONTROL_IF: (block, code, blocks, owner) => {
-        pushInput(block.inputs.CONDITION, code, blocks, owner);
-        code.push("INNER_JUMPIFNOT");
-        alignCode(code, 3);
-        let index = code.length;
-        code.push(0, 0);
-        pushInput(block.inputs.SUBSTACK, code, blocks, owner);
-        code[index] = (code.length & 0xff);
-        code[index + 1] = ((code.length >> 8) & 0xff);
-    },
-    CONTROL_IF_ELSE: (block, code, blocks, owner) => {
-        pushInput(block.inputs.CONDITION, code, blocks, owner);
-        code.push("INNER_JUMPIFNOT");
-        alignCode(code, 3);
-        let elseIndex = code.length;
-        code.push(0, 0);
-        pushInput(block.inputs.SUBSTACK, code, blocks, owner);
-        code.push("INNER_JUMP");
-        alignCode(code, 3);
-        let endIndex = code.length;
-        code.push(0, 0);
-        code[elseIndex] = (code.length & 0xff);
-        code[elseIndex + 1] = ((code.length >> 8) & 0xff);
-        console.log(block);
-        pushInput(block.inputs.SUBSTACK2, code, blocks, owner);
-        code[endIndex] = (code.length & 0xff);
-        code[endIndex + 1] = ((code.length >> 8) & 0xff);
-    },
-    LOOKS_COSTUMENUMBERNAME: (block, code) => {
-        code.push(block.opcode);
-        if (block.fields.NUMBER_NAME[0] == "number") {
-            pushArg(code, toCodeLiteral(0, 2));
-        }
-        else if (block.fields.NUMBER_NAME[0] == "name") {
-            pushArg(code, toCodeLiteral(1, 2));
-        }
-    },
-    SENSING_KEYOPTIONS: (block, code) => {
-        code.push("INNER_PUSHNUMBER")
-        pushArg(code, toScaledInt32Tuple(inputMap[block.fields.KEY_OPTION[0]]));
-    },
-    MOTION_SETROTATIONSTYLE: (block, code) => {
-        code.push(block.opcode);
-        pushArg(code, toCodeLiteral(["left-right", "don't rotate", "all around"].indexOf(block.fields.STYLE[0]), 2));
-    },
-    MOTION_GOTO_MENU: (block, code) => {
-        let to = block.fields.TO[0];
-        if (to === undefined) {
-            console.error("incorrect assumption about the definite shape of motion_goto_menu. block is", block);
-            return;
-        }
-        code.push("INNER_FETCHPOSITION");
-        const fieldValues = {
-            _random_: -1,
-            _mouse_: -2,
-        };
-        let fieldValue = fieldValues[to] || findSprite(to);
-        pushArg(code, toCodeLiteral(fieldValue, 2));
-    },
-    MOTION_GOTO: (block, code, blocks, owner) => {
-        for (let input of Object.values(block.inputs)) pushInput(input, code, blocks, owner);
-        code.push("MOTION_GOTOXY");
-    },
-    MOTION_GLIDETO_MENU: (block, code) => {
-        let to = block.fields.TO[0];
-        if (to === undefined) {
-            console.error("incorrect assumption about the definite shape of motion_glideto_menu. block is", block);
-            return;
-        }
-        code.push("INNER_FETCHPOSITION");
-        const fieldValues = {
-            _random_: -1,
-            _mouse_: -2,
-        };
-        let fieldValue = fieldValues[to] || findSprite(to);
-        pushArg(code, toCodeLiteral(fieldValue, 2));
-    },
-    MOTION_GLIDESECSTOXY: (block, code, blocks, owner) => {
-        for (let input of Object.values(block.inputs)) pushInput(input, code, blocks, owner);
-        code.push(block.opcode);
-        code.push("INNER__GLIDEITERATION");
-    },
-    MOTION_GLIDETO: (block, code, blocks, owner) => {
-        for (let input of Object.values(block.inputs)) pushInput(input, code, blocks, owner);
-        code.push("MOTION_GLIDESECSTOXY");
-        code.push("INNER__GLIDEITERATION");
-    },
-    MOTION_XPOSITION: (block, code) => {
-        code.push(block.opcode);
-        pushArg(code, toCodeLiteral(-1, 2));
-    },
-    MOTION_YPOSITION: (block, code) => {
-        code.push(block.opcode);
-        pushArg(code, toCodeLiteral(-1, 2));
-    },
-    DATA_SETVARIABLETO: (block, code, blocks, owner) => {
-        for (let input of Object.values(block.inputs)) pushInput(input, code, blocks, owner);
-        let [spriteIndex, variableIndex] = findVariable(...block.fields.VARIABLE);
-        code.push(block.opcode);
-        pushArg(code, toCodeLiteral(spriteIndex, 2));
-        pushArg(code, toCodeLiteral(variableIndex, 2));
-    },
-    DATA_CHANGEVARIABLEBY: (block, code, blocks, owner) => {
-        for (let input of Object.values(block.inputs)) pushInput(input, code, blocks, owner);
-        let [spriteIndex, variableIndex] = findVariable(...block.fields.VARIABLE);
-        code.push(block.opcode);
-        pushArg(code, toCodeLiteral(spriteIndex, 2));
-        pushArg(code, toCodeLiteral(variableIndex, 2));
-    }
-};
+function newProjectIndex() {
+    return {
+        stage: null,
+        sprites: [],
+        json: null,
+        globalIndex: {},
+        typesIndex: {},
+        code: [],
+        requireSymbol: function(owner, type, id) {
+            if (this.typesIndex[type] == undefined) this.typesIndex[type] = 0;
+            let key = JSON.stringify([owner, type, id]);
+            let symbol = this.globalIndex[key];
+            if (!symbol) {
+                symbol = {
+                    value: null,
+                    resolve: null
+                };
+                symbol.value = new Promise((res) => {
+                    symbol.resolve = res;
+                });
+                this.globalIndex[key] = symbol;
+            }
+            return symbol;
+        },
+        getSymbol: function(owner, type, id) {
+            if (type in ownerlessSymbolTypes) owner = null;
+            let symbol = this.requireSymbol(owner, type, id);
+            return symbol;
+        },
+        declareSymbol: function(owner, type, id, value) {
+            if (type in ownerlessSymbolTypes) owner = null;
+            let symbol = this.requireSymbol(owner, type, id);
+            value = value || this.typesIndex[type];
+            this.typesIndex[type]++;
+            symbol.resolve(value);
+        },
+    };
+}
 
-export function compileBlock(block, code, blocks, owner) {
-    if (block.opcode.startsWith("SOUND")) {
-        console.log("skipping sound block");
-        return;
-    }
-    let specialFunction = specialFunctions[block.opcode];
-    if (specialFunction !== undefined) {
-        specialFunction(block, code, blocks, owner);
-    }
-    else {
-        for (let input of Object.values(block.inputs)) {
-            pushInput(input, code, blocks, owner);
+async function compileBlocks(projectIndex, sprite, blocks, code) {
+    for (let [id, block] of Object.entries(blocks)) {
+        if (!block.topLevel) continue;
+        if (events.includes(block.opcode.toUpperCase())) {
+            let thread = new Thread(projectIndex, sprite, block, code);
+            let settled = await thread.settle(1000);
+            if (!settled) {
+                console.error("Thread", thread, "failed to resolve");
+            }
+            sprite.threads.push(thread);
         }
-        code.push(block.opcode);
-        if (Object.keys(block.fields).length > 0) {
-        }
-        for (let field of Object.values(block.fields)) {
-            reportField(block, field, code);
+        else if (block.opcode.toUpperCase() == "PROCEDURES_DEFINITION") {
+            let thread = new Thread(projectIndex, sprite, block, code, true);
+            let prototype = blocks[block.inputs.custom_block[1]];
+            console.warn(block, prototype);
+            projectIndex.declareSymbol(sprite.id, symbolTypes.func, prototype.mutation.proccode, thread);
         }
     }
 }
 
-function compileFunction(owner, blocks, code, functionName) {
-    globalObjectIndex.functions[functionName].location = code.length
-    let definition = blocks[functionName];
-    let block = blocks[definition.next];
-    while (block != null) {
-        compileBlock(block, code, blocks, owner);
-        block = blocks[block.next];
+async function compileSprite(projectIndex, sprite, code) {
+    let target = sprite.body;
+    let varCount = 0;
+    for (let [varId, varData] of Object.entries(target.variables)) {
+        projectIndex.declareSymbol(sprite.id, symbolTypes.variable, varId, [sprite.id, varCount++]);
     }
-    code.push("INNER_LOCALS_GETARG");
-    pushArg(code, 0);
-    code.push("INNER_JUMPINDIRECT");
+    for (let [broadcastId, broadcastName] of Object.entries(target.broadcasts)) {
+        projectIndex.declareSymbol(null, symbolTypes.broadcast, broadcastName);
+    }
+    for (let [index, costume] of Object.entries(sprite.body.costumes)) {
+        index = Number(index);
+        let owner = sprite.id;
+        let type = symbolTypes.costume;
+        if (sprite.body.isStage) {
+            owner = null;
+            type = symbolTypes.backdrop;
+        }
+        projectIndex.declareSymbol(owner, type, costume.name, index + 1);
+
+    }
+    let blocks = target.blocks;
+    await compileBlocks(projectIndex, sprite, blocks, code);
 }
 
-export function compileBlocks(hat, owner, blocks, code, project) {
-    indexObjects(project);
-    let entryPoint = code.length;
-    let startEvent = events.indexOf(hat.opcode);
-    let eventCondition = getEventCondition(hat);
-    let block = blocks[hat.next];
-    while (block != null) {
-        compileBlock(block, code, blocks, owner);
-        block = blocks[block.next];
+export async function compileProject(projectIndex) {
+    let targets = projectIndex.json.targets;
+    for (let [index, target] of Object.entries(targets)) {
+        projectIndex.declareSymbol(null, symbolTypes.sprite, target.name, index);
+        let sprite = newSprite();
+        sprite.id = index;
+        sprite.name = target.name;
+        sprite.body = target;
+        await compileSprite(projectIndex, sprite, projectIndex.code);
+        projectIndex.sprites.push(sprite);
     }
-    code.push("INNER_PUSHID");
-    pushArg(code, [0, 0]);
-    code.push("CONTROL_STOP");
-    console.log(code)
-    return {entryPoint, startEvent, eventCondition};
+    projectIndex.stage = projectIndex.sprites[0];
+}
+
+function maskedMerge(obj1, obj2) {
+  const result = {};
+  for (const key of Object.keys(obj1)) {
+    result[key] = key in obj2 ? obj2[key] : obj1[key];
+  }
+  return result;
+}
+
+export async function compileProjectFile(projectJson) {
+    let project = newProjectIndex();
+    project.json = projectJson;
+    await compileProject(project);
+    return project;
 }
 
 export function getCodeAsCarray(code) {
@@ -814,9 +1128,12 @@ export function getCodeAsCarray(code) {
 }
 
 export function getCodeAsBuffer(code) {
-    return code.map((num) => Number(opcodeEnum[num] || num));
+    return code.map((num) => {
+        let value = Number(opcodeEnum[num] || num);
+        if (Number.isNaN(value)) {
+            console.error("value ", num, " not in opcodes and not a number");
+        }
+        return value;
+    });
 }
 
-function printCodeAsCarray(code) {
-    console.log(getCodeAsCarray(code));
-}
