@@ -1,0 +1,24 @@
+{
+  "name": "ScratchVM",
+  "version": "1.0.0",
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "/utstemoutreach/scratchVM/refs/heads/main/scratchVM-image/bootloader.bin",
+          "offset": 4096
+        },
+        {
+          "path": "/utstemoutreach/scratchVM/refs/heads/main/scratchVM-image/partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "/utstemoutreach/scratchVM/refs/heads/main/scratchVM-image/firmware.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}
+
