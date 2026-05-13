@@ -17,7 +17,7 @@ function toCString(string) {
     return bytes;
 }
 
-function toCodeLiteral(number, byteSize) {
+export function toCodeLiteral(number, byteSize) {
     let bytes = [];
     for (let i = 0; i < byteSize; i++) {
         bytes.push(number & 0xff);

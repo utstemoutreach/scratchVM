@@ -39,6 +39,7 @@ export function pingPongProtocol(packetSize, acceptByte) {
             }
         },
         interpret(bytes) {
+            console.log("interpreting ", bytes);
             if (!bytes.includes(acceptByte)) return;
             if (!this.allowPacket) return;
             this.allowPacket();
@@ -73,9 +74,8 @@ export async function connectSerial(serialObj, baudRate) {
 
 export function sendInput(serialObj, input) {
     if (typeof input === "string") input = new TextEncoder().encode(input, "utf-8");
-    console.log(typeof input);
+    else if (typeof input === "number") input = [input];
     if (typeof input !== "Uint8Array") input = new Uint8Array(input);
-    console.log(input);
     serialObj.inputQueue[serialObj.inputQueueTop] = input;
     serialObj.inputQueueTop++;
     serialObj.inputQueueNotification?.();
@@ -156,7 +156,7 @@ export async function startSerialDaemon(serialObj) {
 
 export async function initSerial(inputCallback, outputCallback, baudRate) {
     let serialObj = newSerialObject();
-    serialObj.protocol = pingPongProtocol(4096, 6);
+    serialObj.protocol = pingPongProtocol(4096, 94);
     serialObj.inputCallback = inputCallback || inputNullCallback;
     serialObj.outputCallback = outputCallback || outputNullCallback;
     await connectSerial(serialObj, baudRate);

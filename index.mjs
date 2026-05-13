@@ -1,5 +1,6 @@
 import * as compile from "./utils/compile.js";
 import * as serial from "./utils/serialTools.js";
+import {EspTerminal} from "./utils/esp.js";
 import {updateStatus, reportGameStatus} from "./utils/status.js";
 import { unzipSync } from "https://unpkg.com/fflate/esm/browser.js";
 
@@ -162,9 +163,6 @@ let states = {
                 switchState("awaitingUpload");
                 return "ok";
             }
-            else {
-                console.warn(updateEvent);
-            }
         }
         else if (updateEvent.type == "switchFail") {
             updateState("restore");
@@ -189,7 +187,9 @@ let states = {
         }
         else if (updateEvent.type == "dom") {
             let terminalOutput = get("#terminalOutput");
+            /*
             let terminalForm = get("#terminalForm");
+            */
             let serialObj = await serial.initSerial(
                 null,
                 (bytes) => {
@@ -199,6 +199,7 @@ let states = {
                 },
                 921600
             );
+            /*
             terminalForm.addEventListener("submit", (e) => {
                 e.preventDefault();
                 
@@ -207,11 +208,9 @@ let states = {
 
                 serial.sendInput(serialObj, new TextEncoder().encode(text));
             });
-            let bytes = stateShared.bytes;
-            let magic = bytes.slice(0, 8);
-            let program = bytes.slice(8);
-            serial.sendInput(serialObj, magic);
-            serial.sendInput(serialObj, program);
+            */
+            let terminal = new EspTerminal(serialObj);
+            terminal.sendProgram(stateShared.bytes);
             switchState("awaitingFeedback");
             return "ok";
         }
