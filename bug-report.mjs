@@ -115,4 +115,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+console.log("bug report");
+
 
