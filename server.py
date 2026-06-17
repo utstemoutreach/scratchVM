@@ -18,6 +18,11 @@ os.makedirs(TUTORING_REQUESTS_DIR, exist_ok=True)
 os.makedirs(GAME_REPORTS_DIR, exist_ok=True)
 
 # Serve any file requested
+@app.route('/', methods=['GET', 'OPTIONS'])
+def serve_root():
+    return serve_file("index.html")
+
+
 @app.route('/<path:filename>', methods=['GET', 'OPTIONS'])
 def serve_file(filename):
     if request.method == 'OPTIONS':
@@ -49,9 +54,9 @@ def upload_file(filename):
 # Handle bug reports
 @app.route('/api/bug-report', methods=['POST', 'OPTIONS'])
 def submit_bug_report():
-    response = Response()
-    response.headers['Access-Control-Allow-Origin'] = 'localhost'
     if request.method == 'OPTIONS':
+        response = Response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return response
@@ -92,7 +97,7 @@ def submit_bug_report():
             'message': 'Bug report submitted successfully',
             'id': bug_report['id']
         })
-        response.headers['Access-Control-Allow-Origin'] = 'localhost'
+        response.headers['Access-Control-Allow-Origin'] = '*'
         return response, 200
         
     except Exception as e:
@@ -104,7 +109,7 @@ def submit_bug_report():
 def submit_game_status():
     if request.method == 'OPTIONS':
         response = Response()
-        response.headers['Access-Control-Allow-Origin'] = 'localhost'
+        response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return response
@@ -170,4 +175,4 @@ def submit_game_status():
         return error_response, 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=8000)
