@@ -538,7 +538,7 @@ const specialFunctions = {
     },
 
     LOOKS_SAYFORSECS: (block, thread) => {
-        let framePos = thread.framePos.getStorage(1);
+        let framePos = thread.frame.getStorage(1);
         thread.pushInput(block, block.inputs.MESSAGE);
         thread.pushOpcode("LOOKS_SAY");
         thread.pushInput(block, block.inputs.SECS);
@@ -553,7 +553,7 @@ const specialFunctions = {
     },
 
     LOOKS_THINKFORSECS: (block, thread) => {
-        let framePos = thread.framePos.getStorage(1);
+        let framePos = thread.frame.getStorage(1);
         thread.pushInput(block, block.inputs.MESSAGE);
         thread.pushOpcode("LOOKS_SAY");
         thread.pushInput(block, block.inputs.SECS);
