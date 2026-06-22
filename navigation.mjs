@@ -9,7 +9,7 @@ function buildNavigationLinks() {
     const currentPage = getCurrentPage();
     
     const links = [
-        { href: 'index.html', label: 'Home', id: 'nav-home' },
+        { href: '.', label: 'Home', id: 'nav-home' },
         { href: 'bug-report.html', label: 'Report Bug', id: 'nav-bug-report' },
         { href: 'video.html', label: 'Tutorial video', id: 'nav-tutorial' },
         { href: 'config.html', label: 'Configure & Update', id: 'nav-config'},
