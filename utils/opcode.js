@@ -549,7 +549,7 @@ const specialFunctions = {
         thread.pushOpcode("INNER_PUSHTEXT");
         thread.pushArg("", argProcessors.string);
         thread.pushOpcode("LOOKS_SAY");
-        thread.framePos.returnStorage(1);
+        thread.frame.returnStorage(1);
     },
 
     LOOKS_THINKFORSECS: (block, thread) => {
@@ -564,7 +564,7 @@ const specialFunctions = {
         thread.pushOpcode("INNER_PUSHTEXT");
         thread.pushArg("", argProcessors.string);
         thread.pushOpcode("LOOKS_THINK");
-        thread.framePos.returnStorage(1);
+        thread.frame.returnStorage(1);
     },
 
     LOOKS_SWITCHBACKDROPTO: (block, thread) => {
