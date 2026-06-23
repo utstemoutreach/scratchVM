@@ -260,10 +260,14 @@ export class Thread {
         this.serialized.push(...placeholder);
 
         let value = this.projectIndex.getSymbol(this.sprite.id, symbolTypes.variable, id);
+        let sprite = this.sprite;
 
         let process = argProcessors.id;
         value.value.then((variable) => {
             let [spriteId, varId] = variable;
+            if (spriteId === sprite.id) {
+                spriteId = -1;
+            }
             this.splice(process(spriteId), spriteIdPlace);
             this.splice(process(varId), varIdPlace);
         });
@@ -330,7 +334,7 @@ export class Thread {
         },
         VAR: (input) => {
             this.pushOpcode("INNER_FETCHVAR");
-            this.pushVariableArg(input.value[1], null);
+            this.pushVariableArg(input.value[1]);
         },
         LIST: (input) => {
             console.error("LIST");

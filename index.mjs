@@ -4,6 +4,33 @@ import {EspTerminal} from "./utils/esp.js";
 import {updateStatus, reportGameStatus} from "./utils/status.js";
 import { unzipSync } from "https://unpkg.com/fflate/esm/browser.js";
 
+let serialObj = null;
+let terminalOutput = get("#terminalOutput");
+let FIRMWAREVERSION = null;
+serialObj = await serial.initSerial(
+    null,
+    (bytes) => {
+        let text = new TextDecoder().decode(bytes)
+        console.log(text);
+        const node = document.createTextNode(text);
+        terminalOutput.appendChild(node);
+        if (!FIRMWAREVERSION) {
+            let versionString = "version: ";
+            let index = text.indexOf(versionString);
+            if (index !== -1) {
+                let version = text.slice(index + versionString.length);
+                index = version.indexOf(",");
+                version = version.slice(0, index);
+                FIRMWAREVERSION = version;
+                console.log("FIRMWAREVERSION:", FIRMWAREVERSION);
+            }
+        }
+    },
+    921600,
+    get("html")
+);
+serial.resetSerial(serialObj);
+
 // Parse project ID from Scratch URL
 function parseProjectIDFromURL(url) {
     if (!url || !url.trim()) {
@@ -186,29 +213,6 @@ let states = {
             return "ok";
         }
         else if (updateEvent.type == "dom") {
-            let terminalOutput = get("#terminalOutput");
-            /*
-            let terminalForm = get("#terminalForm");
-            */
-            let serialObj = await serial.initSerial(
-                null,
-                (bytes) => {
-                    let text = new TextDecoder().decode(bytes)
-                    const node = document.createTextNode(text);
-                    terminalOutput.appendChild(node);
-                },
-                921600
-            );
-            /*
-            terminalForm.addEventListener("submit", (e) => {
-                e.preventDefault();
-                
-                let data = new FormData(terminalForm);
-                let text = data.get("command");
-
-                serial.sendInput(serialObj, new TextEncoder().encode(text));
-            });
-            */
             let terminal = new EspTerminal(serialObj);
             terminal.sendProgram(stateShared.bytes);
             switchState("awaitingFeedback");
@@ -284,7 +288,6 @@ let projectDownloadCard = get("#projectDownload");
 let serialMenuCard = get("#serialMenu");
 let reportMenuCard = get("#reportMenu");
 let terminalCard = get("#terminal");
-
 
 async function main() {
     updateState({type: "switch"});

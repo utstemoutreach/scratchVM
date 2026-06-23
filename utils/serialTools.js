@@ -39,7 +39,7 @@ export function pingPongProtocol(packetSize, acceptByte) {
             }
         },
         interpret(bytes) {
-            console.log("interpreting ", bytes);
+            //console.log("interpreting ", bytes);
             if (!bytes.includes(acceptByte)) return;
             if (!this.allowPacket) return;
             this.allowPacket();
@@ -48,26 +48,63 @@ export function pingPongProtocol(packetSize, acceptByte) {
     };
 }
 
+export function setPaired(info) {
+    localStorage.setItem("paired", info);
+}
+
+export function getPaired() {
+    return localStorage.getItem("paired");
+}
 
 // Connect to serial port
-export async function connectSerial(serialObj, baudRate) {
+export async function connectSerial(serialObj, baudRate, triggerDepend) {
     if (baudRate == null) baudRate = 115200;
     let serialPort = null;
-    try {
+    while (true) try {
         // Check if Web Serial API is available
         if (!("serial" in navigator)) {
             throw new Error("Web Serial API not supported in this browser");
+            break;
         }
-        
+
+        const ports = await navigator.serial.getPorts();
+
+        serialPort = ports.find(p => {
+            console.log(p);
+            const info = p.getInfo();
+            console.log(info);
+            return JSON.stringify(info) === getPaired();
+        });
+
         // Request port access
-        serialPort = await navigator.serial.requestPort();
+        if (serialPort == undefined) {
+            serialPort = await navigator.serial.requestPort();
+            setPaired(JSON.stringify(serialPort.getInfo()));
+        }
         
         // Open the port with appropriate baud rate for ESP32
         await serialPort.open({baudRate});
-        
+        break;
     } catch (error) {
-        console.error("Serial connection error:", error);
-        serialPort = null;
+        if (
+            error.name === 'SecurityError' || 
+            error.code === 18 || // DOMException.SECURITY_ERR
+            (error.message && error.message.includes('SecurityError'))
+        ) {
+            let res = null;
+            let waitFor = new Promise((resolve, reject) => {
+                res = resolve;
+            });
+            triggerDepend.addEventListener("click", () => {
+                res();
+            });
+            await waitFor;
+        }
+        else {
+            console.error("Serial connection error:", error);
+            serialPort = null;
+            trying = false;
+        }
     }
     serialObj.port = serialPort;
 }
@@ -154,14 +191,21 @@ export async function startSerialDaemon(serialObj) {
     });
 }
 
-export async function initSerial(inputCallback, outputCallback, baudRate) {
+export async function initSerial(inputCallback, outputCallback, baudRate, triggerDepend) {
     let serialObj = newSerialObject();
     serialObj.protocol = pingPongProtocol(4096, 94);
     serialObj.inputCallback = inputCallback || inputNullCallback;
     serialObj.outputCallback = outputCallback || outputNullCallback;
-    await connectSerial(serialObj, baudRate);
+    await connectSerial(serialObj, baudRate, triggerDepend);
     startSerialDaemon(serialObj);
     return serialObj;
+}
+
+export async function resetSerial(serialObj) {
+    let port = serialObj.port;
+    await port.setSignals({ dataTerminalReady: false, requestToSend: true });
+    await new Promise(r => setTimeout(r, 100));
+    await port.setSignals({ dataTerminalReady: true, requestToSend: true });
 }
 
 // Disconnect serial port

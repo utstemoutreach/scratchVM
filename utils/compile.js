@@ -81,6 +81,7 @@ function serializeProject(project, json) {
         sprite.threads = project.sprites[index].threads;
         sprite.struct.threadCount = sprite.threads.length;
 
+        console.log(target, sprite);
         directory.spriteStructs.push(sprite);
         directory.broadcasts.push(target.broadcasts);
     }
@@ -169,6 +170,7 @@ function toIntStruct(arr, sizes) {
 }
 
 function makeSprite(spriteBase) {
+    console.log(spriteBase.variableCount);
     let sizes = [
         4, 4, 4,
         2,
@@ -227,6 +229,7 @@ async function getProgramAsBlob(directory) {
     let spriteBuffer = [];
     let threadBuffer = [];
     for (let sprite of directory.spriteStructs) {
+        console.log(sprite.struct);
         spriteBuffer.push(...makeSprite(sprite.struct));
         pad(spriteBuffer, 4);
         for (let thread of sprite.threads) {
