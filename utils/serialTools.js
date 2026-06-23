@@ -81,6 +81,8 @@ export async function connectSerial(serialObj, baudRate, triggerDepend) {
             serialPort = await navigator.serial.requestPort();
             setPaired(JSON.stringify(serialPort.getInfo()));
         }
+
+        console.log(serialPort);
         
         // Open the port with appropriate baud rate for ESP32
         await serialPort.open({baudRate});
