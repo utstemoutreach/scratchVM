@@ -13,6 +13,7 @@ function buildNavigationLinks() {
         { href: 'bug-report.html', label: 'Report Bug', id: 'nav-bug-report' },
         { href: 'video.html', label: 'Tutorial video', id: 'nav-tutorial' },
         { href: 'config.html', label: 'Configure & Update', id: 'nav-config'},
+        { href: 'gallery.html', label: 'Gallery', id: 'nav-config'},
     ];
     
     return links;

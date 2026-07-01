@@ -121,6 +121,8 @@ async function getScratchProject() {
     };
     
     const project = await SBDL.downloadProjectFromID(projectID, options);
+
+    console.log(project);
     
     // Get project name from the downloaded project
     let projectName = sanitizeProjectName(project.title, `project_${projectID}`);
