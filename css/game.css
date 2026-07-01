@@ -1,0 +1,11 @@
+.card {
+    display: flex;
+    align-items: center;
+    flex-direction: column;
+}
+
+#gameWindow {
+    width: 30vw;
+    height: 30vw;
+    background-color: red;
+}

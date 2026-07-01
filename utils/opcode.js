@@ -139,6 +139,7 @@ export class Thread {
         this.sprite = sprite;
         this.blocks = sprite.body.blocks;
 
+        console.log(hat);
         hat = processBlock(hat, this.blocks);
         this.entryPoint = code.length;
         this.startEvent = events.indexOf(hat.opcode);
@@ -359,25 +360,41 @@ export class Thread {
         }
         pushFunc(input);
     }
+    validPrefixes = [
+        "MOTION",
+        "LOOKS",
+        "EVENTS",
+        "CONTROL",
+        "SENSING",
+        "OPERATOR",
+        "DATA",
+        "PROCEDURES",
+    ];
     compileBlock(block) {
+        if (block == null) return;
         block = processBlock(block, this.blocks);
-        if (block.opcode.startsWith("SOUND")) {
-            console.warn("skipping sound block");
-            return;
+        let prefixOk = false;
+        for (let prefix of this.validPrefixes) {
+            if (block.opcode.startsWith(prefix)) prefixOk = true;
         }
-        let specialFunction = specialFunctions[block.opcode];
-        if (specialFunction !== undefined) {
-            specialFunction(block, this);
+        if (prefixOk) {
+            let specialFunction = specialFunctions[block.opcode];
+            if (specialFunction !== undefined) {
+                specialFunction(block, this);
+            }
+            else {
+                for (let input of Object.values(block.inputs)) {
+                    this.pushInput(block, input);
+                }
+                this.pushOpcode(block.opcode);
+                // all blocks with fields should have explicit handlers
+                for (let field of Object.values(block.fields)) {
+                    reportField(block, field);
+                }
+            }
         }
         else {
-            for (let input of Object.values(block.inputs)) {
-                this.pushInput(block, input);
-            }
-            this.pushOpcode(block.opcode);
-            // all blocks with fields should have explicit handlers
-            for (let field of Object.values(block.fields)) {
-                reportField(block, field);
-            }
+            console.warn("block has bad prefix:", block.opcode);
         }
         if (block.next) this.compileBlock(this.blocks[block.next]);
     }
@@ -411,6 +428,8 @@ export function processInput(input) {
 }
 
 function processBlock(block, blocks) {
+    if (block == undefined) return null;
+    console.log(block);
     block.opcode = block.opcode.toUpperCase();
     let processed = {
         opcode: block.opcode,
