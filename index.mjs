@@ -4,10 +4,9 @@ import {EspTerminal} from "./utils/esp.js";
 import {updateStatus, reportGameStatus} from "./utils/status.js";
 import { unzipSync } from "https://unpkg.com/fflate/esm/browser.js";
 
-let serialObj = null;
 let terminalOutput = get("#terminalOutput");
 let FIRMWAREVERSION = null;
-serialObj = await serial.initSerial(
+let serialObj = await serial.initSerial(
     null,
     (bytes) => {
         let text = new TextDecoder().decode(bytes)

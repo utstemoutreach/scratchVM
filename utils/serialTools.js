@@ -61,7 +61,6 @@ export async function connectSerial(serialObj, baudRate, triggerDepend) {
     if (baudRate == null) baudRate = 115200;
     let serialPort = null;
     while (true) try {
-        // Check if Web Serial API is available
         if (!("serial" in navigator)) {
             throw new Error("Web Serial API not supported in this browser");
             break;

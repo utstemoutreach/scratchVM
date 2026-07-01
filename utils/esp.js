@@ -20,10 +20,13 @@ export class EspTerminal {
         sendInput(this.serialObj, value);
         sendInput(this.serialObj, STX);
     }
-    sendProgram(bytes) {
+    async sendProgram(bytes) {
         let magic = bytes.slice(0, 8);
         let program = bytes.slice(8);
         sendInput(this.serialObj, magic);
+        await new Promise((res, rej) => {
+            setTimeout(()=>res(), 100);
+        });
         sendInput(this.serialObj, program);
     }
     switchApp(appName) {
