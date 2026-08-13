@@ -32,7 +32,7 @@ export function pingPongProtocol(packetSize, acceptByte) {
         async write(bytes, writer) {
             for (let batch of batchArray(bytes, packetSize)) {
                 console.log(batch);
-                writer.write(batch);
+                await writer.write(batch);
                 await new Promise(res => {
                     this.allowPacket = res;
                 });
@@ -56,58 +56,55 @@ export function getPaired() {
     return localStorage.getItem("paired");
 }
 
-// Connect to serial port
-export async function connectSerial(serialObj, baudRate, triggerDepend) {
-    if (baudRate == null) baudRate = 115200;
-    let serialPort = null;
-    while (true) try {
-        if (!("serial" in navigator)) {
-            throw new Error("Web Serial API not supported in this browser");
-            break;
-        }
-
-        const ports = await navigator.serial.getPorts();
-
-        serialPort = ports.find(p => {
-            console.log(p);
-            const info = p.getInfo();
-            console.log(info);
-            return JSON.stringify(info) === getPaired();
-        });
-
-        // Request port access
-        if (serialPort == undefined) {
-            serialPort = await navigator.serial.requestPort();
-            setPaired(JSON.stringify(serialPort.getInfo()));
-        }
-
-        console.log(serialPort);
-        
-        // Open the port with appropriate baud rate for ESP32
-        await serialPort.open({baudRate});
-        break;
-    } catch (error) {
-        if (
-            error.name === 'SecurityError' || 
-            error.code === 18 || // DOMException.SECURITY_ERR
-            (error.message && error.message.includes('SecurityError'))
-        ) {
-            let res = null;
-            let waitFor = new Promise((resolve, reject) => {
-                res = resolve;
-            });
-            triggerDepend.addEventListener("click", () => {
-                res();
-            });
-            await waitFor;
-        }
-        else {
-            console.error("Serial connection error:", error);
-            serialPort = null;
-            trying = false;
-        }
+// TODO: add disconnection callback
+export async function startConnection(serialObj, baudRate, clickableElement, demandCallback) {
+    if (demandCallback == null) {
+        demandCallback = () => {}
     }
-    serialObj.port = serialPort;
+    let connection = {
+        connected: false,
+        promise: null,
+        demandCallback
+    };
+    serialObj.connection = connection;
+
+    if (!("serial" in navigator)) {
+        throw new Error("Web Serial API not supported in this browser");
+        return daemon;
+    }
+
+    const ports = await navigator.serial.getPorts();
+
+    let serialPort = ports.find(p => {
+        console.log(p);
+        const info = p.getInfo();
+        console.log(info);
+        return JSON.stringify(info) === getPaired();
+    });
+
+    if (serialPort != undefined) {
+        connection.promise = Promise.resolve(serialPort);
+    }
+    else {
+        connection.promise = new Promise((res, rej) => {
+            clickableElement.addEventListener("click", async () => {
+                serialPort = await navigator.serial.requestPort();
+                setPaired(JSON.stringify(serialPort.getInfo()));
+                res(serialPort);
+            });
+        });
+    }
+    let port = await connection.promise;
+    console.log(port);
+    try {
+        await serialPort.open({baudRate});
+        connection.connected = true;
+        serialObj.port = port;
+    }
+    catch (err) {
+        console.warn(err);
+        setPaired(null);
+    }
 }
 
 export function sendInput(serialObj, input) {
@@ -197,7 +194,8 @@ export async function initSerial(inputCallback, outputCallback, baudRate, trigge
     serialObj.protocol = pingPongProtocol(4096, 94);
     serialObj.inputCallback = inputCallback || inputNullCallback;
     serialObj.outputCallback = outputCallback || outputNullCallback;
-    await connectSerial(serialObj, baudRate, triggerDepend);
+    await startConnection(serialObj, baudRate, triggerDepend);
+    console.log(serialObj);
     startSerialDaemon(serialObj);
     return serialObj;
 }

@@ -26,7 +26,7 @@ let serialObj = await serial.initSerial(
         }
     },
     921600,
-    get("html")
+    get("#connect")
 );
 serial.resetSerial(serialObj);
 

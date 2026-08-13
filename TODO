@@ -1,43 +1,44 @@
-integrate with https backend for 
-        logging, 
-DONE    bug reporting, 
-        and sharing
+WIP     integrate with https backend for 
+            logging, 
+DONE        bug reporting, 
+            and sharing
 
-coordinate with esp VM to re-organize a few unsavory bits of architecture
+        coordinate with esp VM to re-organize a few unsavory bits of architecture
 
 DONE    coordinate with esp firmware to swap color order, SPI pins, thumbstick pins, width/height at runtime
 
-
 WIP     decouple esp serial communication from compiling games in the interface
 
-enrich game compilation (VM wasm port for game testing, feedback about unsupported blocks)
+        Reflash esp32 without erasing
 
-give games their own menus for uploading, testing, reporting wrong behavior, etc
+        enrich game compilation (VM wasm port for game testing, feedback about unsupported blocks)
 
-multiple upload & scratch game menu on esp device
+        give games their own menus for uploading, testing, reporting wrong behavior, etc
 
-make esp serial connection like sign-in, with esp flash holding difficult-to-fake device identity information along with a private randomly generated password
+        multiple upload & scratch game menu on esp device
 
-link esp accounts with scratch accounts using interactive program-based auth: an author can create and share a sketch that contains a keyword (like the MAC address of the esp32), and that should prove that they are the owner of the account, and the website can associate their esp's mac address with it (website has no executive Scratch interaction, but allowing users to claim games in the gallery will be nice among other things)
+        make esp serial connection like sign-in, with esp flash holding difficult-to-fake device identity information along with a private randomly generated password
 
-esp->scratch link is not high-stakes and can be revoked at will
+        link esp accounts with scratch accounts using interactive program-based auth: an author can create and share a sketch that contains a keyword (like the MAC address of the esp32), and that should prove that they are the owner of the account, and the website can associate their esp's mac address with it (website has no executive Scratch interaction, but allowing users to claim games in the gallery will be nice among other things)
 
-serial connection: signin-like transient site state; game compilation: card view interactive session with gallery navigation
+        esp->scratch link is not high-stakes and can be revoked at will
 
-engine behavior:
+        serial connection: signin-like transient site state; game compilation: card view interactive session with gallery navigation
 
-implement parameters for `my blocks`
+        engine behavior:
 
-implement actual parameter switching for usually baked-in values (color order, screen pins)
+        implement parameters for `my blocks`
 
-implement serial config menu
+        implement actual parameter switching for usually baked-in values (color order, screen pins)
 
-implement simple calibration routine
+        implement serial config menu
 
-rework many opcodes to be more runtime string-oriented (many "pick option" inputs use static code constants where scratch actually allows runtime values)
+        implement simple calibration routine
 
-a few opcodes still need implementations
+        rework many opcodes to be more runtime string-oriented (many "pick option" inputs use static code constants where scratch actually allows runtime values)
 
-implement opcode debugging harness
+        a few opcodes still need implementations
 
-implement more faithful rendering behavior such as all-around rotation and per-pixel collision (optional, slower)
+        implement opcode debugging harness
+
+        implement more faithful rendering behavior such as all-around rotation and per-pixel collision (optional, slower)

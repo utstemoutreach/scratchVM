@@ -369,6 +369,7 @@ export class Thread {
         "OPERATOR",
         "DATA",
         "PROCEDURES",
+        "EVENT",
     ];
     compileBlock(block) {
         if (block == null) return;
